@@ -1,0 +1,4 @@
+.env
+.seed-admin.local
+node_modules/
+
