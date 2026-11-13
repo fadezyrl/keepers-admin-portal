@@ -81,7 +81,13 @@ function MembersInner() {
         };
       });
       await afterMemberMutation(queryClient);
-      toast.success(`Member marked ${nextStatus}`);
+      toast.success(
+        nextStatus === "suspended"
+          ? "Account deactivated"
+          : nextStatus === "approved"
+            ? "Account updated"
+            : `Member marked ${nextStatus}`,
+      );
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update member");
     } finally {
@@ -187,7 +193,7 @@ function MembersInner() {
               hidden: m.status === "rejected",
             },
             {
-              label: m.status === "suspended" ? "Reactivate" : "Suspend",
+              label: m.status === "suspended" ? "Reactivate" : "Deactivate",
               onClick: () =>
                 void setMemberStatus(m.id, m.status === "suspended" ? "approved" : "suspended"),
               tone: m.status === "suspended" ? "default" : "danger",
@@ -247,11 +253,12 @@ function MembersInner() {
                 setPage(1);
               }}
             >
-              <option value="">All statuses</option>
+              <option value="">All active statuses</option>
               <option value="pending">Pending</option>
-              <option value="approved">Approved</option>
+              <option value="approved">Active</option>
               <option value="rejected">Rejected</option>
-              <option value="suspended">Suspended</option>
+              <option value="suspended">Deactivated</option>
+              <option value="deleted">Deleted</option>
             </select>
           </FilterBar>
         }
@@ -293,6 +300,23 @@ function MembersInner() {
         open={Boolean(drawerId)}
         onClose={() => setDrawerId(null)}
         onUpdated={patchMember}
+        onRemoved={(id) => {
+          setData((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              items: prev.items.filter((m) => m.id !== id),
+              pagination: {
+                ...prev.pagination,
+                total:
+                  typeof prev.pagination.total === "number"
+                    ? Math.max(0, prev.pagination.total - 1)
+                    : prev.pagination.total,
+              },
+            };
+          });
+          setDrawerId(null);
+        }}
       />
 
       <ConfirmDialog

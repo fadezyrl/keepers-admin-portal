@@ -257,6 +257,7 @@ a {
 
 .badge-rejected,
 .badge-suspended,
+.badge-deleted,
 .badge-cancelled {
   background: rgba(139, 58, 47, 0.1);
   border-color: rgba(139, 58, 47, 0.28);

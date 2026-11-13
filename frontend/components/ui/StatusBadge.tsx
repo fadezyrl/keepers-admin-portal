@@ -12,6 +12,7 @@ const CLASS_MAP: Record<string, string> = {
   waitlist: "badge-waitlist",
   rejected: "badge-rejected",
   suspended: "badge-suspended",
+  deleted: "badge-deleted",
   cancelled: "badge-cancelled",
   full: "badge-pending",
 };

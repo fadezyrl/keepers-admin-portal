@@ -96,7 +96,10 @@ function requireApprovedMember(req, res, next) {
     return fail(res, 403, 'REJECTED', 'Your membership application was rejected');
   }
   if (req.user.profile.status === 'suspended') {
-    return fail(res, 403, 'SUSPENDED', 'Your account is suspended');
+    return fail(res, 403, 'SUSPENDED', 'Your account has been deactivated');
+  }
+  if (req.user.profile.deleted_at) {
+    return fail(res, 403, 'ACCOUNT_DELETED', 'This account has been permanently deleted');
   }
   if (req.user.profile.status !== 'approved') {
     return fail(res, 403, 'FORBIDDEN', 'Account is not active');

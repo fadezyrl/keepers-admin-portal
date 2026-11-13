@@ -174,6 +174,14 @@ async function login(email, password) {
 
   const ctx = await loadAuthContext(data.user.id);
   if (!ctx.profile) {
+    // Soft-deleted / scrubbed profiles are excluded from loadAuthContext
+    const gone = await query(
+      `SELECT id FROM member_profiles WHERE id = $1 AND deleted_at IS NOT NULL`,
+      [data.user.id],
+    );
+    if (gone.rows[0]) {
+      throw new AppError(403, 'ACCOUNT_DELETED', 'This account has been permanently deleted');
+    }
     throw new AppError(403, 'PROFILE_REQUIRED', 'Member profile not found');
   }
 
@@ -190,7 +198,10 @@ async function login(email, password) {
   }
 
   if (ctx.profile.status === 'suspended') {
-    throw new AppError(403, 'SUSPENDED', 'Your account is suspended');
+    throw new AppError(403, 'SUSPENDED', 'Your account has been deactivated');
+  }
+  if (ctx.profile.deleted_at) {
+    throw new AppError(403, 'ACCOUNT_DELETED', 'This account has been permanently deleted');
   }
   if (ctx.profile.status === 'rejected') {
     throw new AppError(403, 'REJECTED', 'Your membership application was rejected');

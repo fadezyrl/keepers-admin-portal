@@ -25,5 +25,9 @@ export function displayName(
 
 export function statusLabel(status?: string | null) {
   if (!status) return "—";
+  const key = status.toLowerCase();
+  if (key === "approved") return "Active";
+  if (key === "suspended") return "Deactivated";
+  if (key === "deleted") return "Deleted";
   return status.replace(/_/g, " ");
 }

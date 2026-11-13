@@ -206,15 +206,30 @@ function MemberDetailInner() {
               >
                 Reject
               </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={busy}
-                onClick={() => setStatus("suspended")}
-              >
-                Suspend
-              </button>
+              {data.status === "suspended" ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={() => setStatus("approved")}
+                >
+                  Reactivate
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={busy}
+                  onClick={() => setStatus("suspended")}
+                >
+                  Deactivate
+                </button>
+              )}
             </div>
+            <p className="mt-3 mb-0 text-sm text-[var(--keepers-muted)]">
+              Deactivation blocks login and is reversible. Use the members drawer for permanent
+              deletion with trip reassignment.
+            </p>
           </section>
 
           <section className="panel p-6">

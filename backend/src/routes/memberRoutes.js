@@ -92,4 +92,31 @@ router.delete(
   }),
 );
 
+router.get(
+  '/:id/deletion-impact',
+  requirePermission('members.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await memberService.getDeletionImpact(req.params.id, req.user);
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/:id/permanent-delete',
+  requirePermission('members.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await memberService.permanentlyDeleteMember(
+      req.params.id,
+      {
+        confirmEmail: req.body.confirmEmail,
+        tripActions: req.body.tripActions,
+        reason: req.body.reason,
+      },
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Member permanently deleted');
+  }),
+);
+
 module.exports = router;
