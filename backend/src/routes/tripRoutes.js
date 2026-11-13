@@ -60,6 +60,18 @@ router.get(
 );
 
 router.get(
+  '/mine/assigned',
+  asyncHandler(async (req, res) => {
+    const data = await tripService.listMyAssignedTrips(req.user, {
+      status: req.query.status,
+      page: Number(req.query.page || 1),
+      limit: Number(req.query.limit || 50),
+    });
+    return ok(res, data);
+  }),
+);
+
+router.get(
   '/registrations',
   requirePermission('registrations.manage', 'trips.manage'),
   asyncHandler(async (req, res) => {
@@ -140,6 +152,15 @@ router.post(
 );
 
 router.delete(
+  '/:id/permanent',
+  requirePermission('trips.manage', 'trips.create', 'trips.manage_own'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.permanentlyDeleteTrip(req.params.id, req.user, req);
+    return ok(res, data, 'Trip permanently deleted');
+  }),
+);
+
+router.delete(
   '/:id',
   requirePermission('trips.manage'),
   asyncHandler(async (req, res) => {
@@ -179,6 +200,43 @@ router.post(
       req,
     );
     return ok(res, data, 'Attendance recorded');
+  }),
+);
+
+router.get(
+  '/:id/pre-marshalls',
+  requirePermission('trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.listPreMarshallAssignments(req.params.id, req.user);
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/:id/pre-marshalls',
+  requirePermission('trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.assignPreMarshall(
+      req.params.id,
+      { userId: req.body.userId, notes: req.body.notes },
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Pre-Marshall assigned');
+  }),
+);
+
+router.delete(
+  '/:id/pre-marshalls/:userId',
+  requirePermission('trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.unassignPreMarshall(
+      req.params.id,
+      req.params.userId,
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Pre-Marshall unassigned');
   }),
 );
 

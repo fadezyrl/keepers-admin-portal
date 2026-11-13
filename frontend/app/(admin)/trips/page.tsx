@@ -163,6 +163,13 @@ export default function TripsPage() {
                 tone: "danger",
                 hidden: s === "cancelled",
               },
+              {
+                label: "Delete…",
+                onClick: () => {
+                  window.location.href = `/trips/${t.id}`;
+                },
+                tone: "danger",
+              },
             ]}
           />
         );

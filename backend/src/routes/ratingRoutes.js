@@ -93,4 +93,23 @@ router.post(
   }),
 );
 
+// Parameterized routes must stay after static /upgrades paths
+router.get(
+  '/:id',
+  requirePermission('ratings.create', 'upgrades.review', 'trips.manage', 'dashboard.read'),
+  asyncHandler(async (req, res) => {
+    const data = await ratingService.getRatingDetail(req.params.id);
+    return ok(res, data);
+  }),
+);
+
+router.patch(
+  '/:id',
+  requirePermission('upgrades.review', 'trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await ratingService.correctRating(req.params.id, req.body, req.user, req);
+    return ok(res, data, 'Rating corrected');
+  }),
+);
+
 module.exports = router;

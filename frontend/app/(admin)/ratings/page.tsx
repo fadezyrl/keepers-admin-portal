@@ -39,6 +39,75 @@ export default function RatingsPage() {
   const [memberId, setMemberId] = useState<string | null>(null);
   const [tripId, setTripId] = useState<string | null>(null);
   const [ratingDetail, setRatingDetail] = useState<RatingRow | null>(null);
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionNotes, setCorrectionNotes] = useState("");
+  const [correctionScores, setCorrectionScores] = useState<
+    Array<{ criterionId: string; name: string; score: number }>
+  >([]);
+
+  async function openRatingDetail(r: RatingRow) {
+    setRatingDetail(r);
+    setCorrectionReason("");
+    setCorrectionNotes(r.public_notes || "");
+    setCorrectionScores(
+      (r.scores || []).map((s) => ({
+        criterionId: s.criterionId,
+        name: s.name,
+        score: Number(s.score),
+      })),
+    );
+    try {
+      const detail = await api.get<
+        RatingRow & {
+          history?: Array<{
+            id: string;
+            reason: string;
+            previousOverall: number;
+            newOverall: number;
+            createdAt: string;
+          }>;
+        }
+      >(`/ratings/${r.id}`);
+      setRatingDetail(detail);
+      setCorrectionNotes(detail.public_notes || "");
+      setCorrectionScores(
+        (detail.scores || []).map((s) => ({
+          criterionId: s.criterionId,
+          name: s.name,
+          score: Number(s.score),
+        })),
+      );
+    } catch {
+      // keep list row if detail fetch fails
+    }
+  }
+
+  async function submitCorrection() {
+    if (!ratingDetail) return;
+    if (correctionReason.trim().length < 3) {
+      toast.error("Correction reason is required");
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.patch<RatingRow>(`/ratings/${ratingDetail.id}`, {
+        reason: correctionReason.trim(),
+        publicNotes: correctionNotes,
+        scores: correctionScores.map((s) => ({
+          criterionId: s.criterionId,
+          score: s.score,
+        })),
+      });
+      setRatingDetail(updated);
+      setCorrectionReason("");
+      toast.success("Rating corrected");
+      await afterRatingMutation(queryClient);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Correction failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function review(id: string, decision: "approved" | "rejected", decisionNotes?: string) {
     setBusyIds((prev) => new Set(prev).add(id));
@@ -161,7 +230,7 @@ export default function RatingsPage() {
       cell: (r) => (
         <RowActions
           actions={[
-            { label: "Details", onClick: () => setRatingDetail(r) },
+            { label: "Details", onClick: () => void openRatingDetail(r) },
             {
               label: "Member",
               onClick: () => setMemberId(r.member_id),
@@ -211,7 +280,7 @@ export default function RatingsPage() {
           error={ratings.error}
           emptyTitle="No ratings recorded"
           emptyDescription="Marshall trip ratings will appear once submitted."
-          onRowClick={(r) => setRatingDetail(r)}
+          onRowClick={(r) => void openRatingDetail(r)}
         />
       </section>
 
@@ -305,6 +374,18 @@ export default function RatingsPage() {
         onClose={() => setRatingDetail(null)}
         title="Rating details"
         subtitle={ratingDetail?.trip_title || undefined}
+        footer={
+          ratingDetail ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void submitCorrection()}
+            >
+              Save correction
+            </button>
+          ) : null
+        }
       >
         {ratingDetail ? (
           <div className="space-y-4">
@@ -330,18 +411,77 @@ export default function RatingsPage() {
                 <dd>{formatDateTime(ratingDetail.created_at)}</dd>
               </div>
             </dl>
-            {ratingDetail.public_notes ? (
-              <p className="m-0 text-sm">{ratingDetail.public_notes}</p>
-            ) : null}
-            {(ratingDetail.scores || []).length > 0 ? (
-              <ul className="m-0 list-none space-y-2 p-0">
-                {ratingDetail.scores!.map((s) => (
-                  <li key={s.criterionId} className="flex justify-between text-sm">
+
+            <FormField label="Public notes">
+              <textarea
+                className="admin-textarea"
+                value={correctionNotes}
+                onChange={(e) => setCorrectionNotes(e.target.value)}
+              />
+            </FormField>
+
+            {correctionScores.length > 0 ? (
+              <div className="space-y-2">
+                <p className="m-0 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                  Criterion scores
+                </p>
+                {correctionScores.map((s, idx) => (
+                  <label key={s.criterionId} className="flex items-center justify-between gap-3 text-sm">
                     <span>{s.name}</span>
-                    <span>{s.score}</span>
-                  </li>
+                    <input
+                      className="admin-input w-20"
+                      type="number"
+                      value={s.score}
+                      onChange={(e) => {
+                        const next = [...correctionScores];
+                        next[idx] = { ...s, score: Number(e.target.value) };
+                        setCorrectionScores(next);
+                      }}
+                    />
+                  </label>
                 ))}
-              </ul>
+              </div>
+            ) : null}
+
+            <FormField label="Correction reason (required)">
+              <textarea
+                className="admin-textarea"
+                value={correctionReason}
+                onChange={(e) => setCorrectionReason(e.target.value)}
+                placeholder="Why is this rating being corrected?"
+              />
+            </FormField>
+
+            {((ratingDetail as RatingRow & { history?: Array<{ id: string; reason: string; previousOverall: number; newOverall: number; createdAt: string }> }).history || []).length >
+            0 ? (
+              <div>
+                <p className="mb-2 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                  Correction history
+                </p>
+                <ul className="m-0 list-none space-y-2 p-0">
+                  {(
+                    ratingDetail as RatingRow & {
+                      history?: Array<{
+                        id: string;
+                        reason: string;
+                        previousOverall: number;
+                        newOverall: number;
+                        createdAt: string;
+                      }>;
+                    }
+                  ).history!.map((h) => (
+                    <li key={h.id} className="border border-[var(--keepers-line)] px-3 py-2 text-sm">
+                      <div>
+                        {Number(h.previousOverall).toFixed(1)} → {Number(h.newOverall).toFixed(1)}
+                      </div>
+                      <div className="text-[var(--keepers-muted)]">{h.reason}</div>
+                      <div className="text-[var(--keepers-muted)]">
+                        {formatDateTime(h.createdAt)}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
           </div>
         ) : null}

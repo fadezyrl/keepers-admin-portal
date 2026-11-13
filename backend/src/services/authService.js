@@ -402,6 +402,10 @@ async function deleteAccount(userId, email, currentPassword, req) {
       [userId],
     );
     await client.query(
+      `DELETE FROM trip_pre_marshall_assignments WHERE user_id = $1`,
+      [userId],
+    );
+    await client.query(
       `UPDATE member_media SET deleted_at = NOW() WHERE user_id = $1 AND deleted_at IS NULL`,
       [userId],
     );
@@ -418,6 +422,15 @@ async function deleteAccount(userId, email, currentPassword, req) {
     }
   } catch {
     // non-fatal — profile already scrubbed
+  }
+
+  // Invalidate refresh/session tokens before removing the auth user
+  try {
+    if (typeof admin.auth.admin.signOut === 'function') {
+      await admin.auth.admin.signOut(userId, 'global');
+    }
+  } catch {
+    // non-fatal — deleteUser still invalidates credentials
   }
 
   const { error: deleteError } = await admin.auth.admin.deleteUser(userId);

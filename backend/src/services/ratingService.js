@@ -363,6 +363,161 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
   );
 }
 
+async function correctRating(ratingId, payload, actor, req) {
+  // Controlled correction: Admin only (not Marshall re-submit)
+  if (!hasPermission(actor, 'upgrades.review') && !hasPermission(actor, 'trips.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Only Admins can correct ratings');
+  }
+
+  const reason = (payload.reason || '').trim();
+  if (reason.length < 3) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Correction reason is required');
+  }
+
+  const existing = await query(`SELECT * FROM trip_ratings WHERE id = $1`, [ratingId]);
+  if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Rating not found');
+  const row = existing.rows[0];
+
+  const prevScoresRes = await query(
+    `SELECT rs.criterion_id AS "criterionId", rc.code, rc.name, rs.score
+     FROM trip_rating_scores rs
+     JOIN rating_criteria rc ON rc.id = rs.criterion_id
+     WHERE rs.rating_id = $1`,
+    [ratingId],
+  );
+  const previousScores = prevScoresRes.rows;
+
+  let normalized = previousScores.map((s) => ({
+    criterionId: s.criterionId,
+    score: Number(s.score),
+  }));
+
+  if (Array.isArray(payload.scores) && payload.scores.length > 0) {
+    const criteria = await listCriteria({ includeInactive: true });
+    const criteriaById = new Map(criteria.map((c) => [c.id, c]));
+    const criteriaByCode = new Map(criteria.map((c) => [c.code, c]));
+    normalized = payload.scores.map((s) => {
+      const criterion =
+        (s.criterionId && criteriaById.get(s.criterionId)) ||
+        (s.code && criteriaByCode.get(s.code));
+      if (!criterion) throw new AppError(400, 'INVALID_CRITERION', 'Unknown rating criterion');
+      const score = Number(s.score);
+      if (score < criterion.min_score || score > criterion.max_score) {
+        throw new AppError(400, 'INVALID_SCORE', `Score out of range for ${criterion.name}`);
+      }
+      return { criterionId: criterion.id, score };
+    });
+  }
+
+  const overall =
+    normalized.reduce((sum, s) => sum + s.score, 0) / Math.max(normalized.length, 1);
+  const nextPrivate =
+    payload.privateFeedback !== undefined ? payload.privateFeedback : row.private_feedback;
+  const nextPublic =
+    payload.publicNotes !== undefined ? payload.publicNotes : row.public_notes;
+
+  const updated = await withTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO trip_rating_history (
+         rating_id, changed_by,
+         previous_overall_score, new_overall_score,
+         previous_scores, new_scores,
+         previous_private_feedback, new_private_feedback,
+         previous_public_notes, new_public_notes,
+         reason
+       ) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11)`,
+      [
+        ratingId,
+        actor.id,
+        row.overall_score,
+        overall,
+        JSON.stringify(previousScores),
+        JSON.stringify(normalized),
+        row.private_feedback,
+        nextPrivate || null,
+        row.public_notes,
+        nextPublic || null,
+        reason,
+      ],
+    );
+
+    const result = await client.query(
+      `UPDATE trip_ratings SET
+         overall_score = $1,
+         private_feedback = $2,
+         public_notes = $3,
+         updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [overall, nextPrivate || null, nextPublic || null, ratingId],
+    );
+
+    await client.query(`DELETE FROM trip_rating_scores WHERE rating_id = $1`, [ratingId]);
+    for (const s of normalized) {
+      await client.query(
+        `INSERT INTO trip_rating_scores (rating_id, criterion_id, score) VALUES ($1,$2,$3)`,
+        [ratingId, s.criterionId, s.score],
+      );
+    }
+
+    return result.rows[0];
+  });
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'rating.correct',
+    entityType: 'trip_ratings',
+    entityId: ratingId,
+    metadata: { reason, previousOverall: row.overall_score, newOverall: overall },
+    req,
+  });
+
+  cachePresets.rating('rating.correct');
+  return getRatingDetail(ratingId);
+}
+
+async function getRatingDetail(ratingId) {
+  const res = await query(
+    `SELECT tr.*,
+            mp.first_name AS member_first_name, mp.last_name AS member_last_name,
+            rb.first_name AS rater_first_name, rb.last_name AS rater_last_name,
+            t.title AS trip_title,
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                 'criterionId', rs.criterion_id,
+                 'code', rc.code,
+                 'name', rc.name,
+                 'score', rs.score
+               ))
+               FROM trip_rating_scores rs
+               JOIN rating_criteria rc ON rc.id = rs.criterion_id
+               WHERE rs.rating_id = tr.id),
+              '[]'::json
+            ) AS scores,
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                 'id', h.id,
+                 'reason', h.reason,
+                 'previousOverall', h.previous_overall_score,
+                 'newOverall', h.new_overall_score,
+                 'changedBy', h.changed_by,
+                 'createdAt', h.created_at
+               ) ORDER BY h.created_at DESC)
+               FROM trip_rating_history h
+               WHERE h.rating_id = tr.id),
+              '[]'::json
+            ) AS history
+     FROM trip_ratings tr
+     JOIN member_profiles mp ON mp.id = tr.member_id
+     JOIN member_profiles rb ON rb.id = tr.rated_by
+     JOIN trips t ON t.id = tr.trip_id
+     WHERE tr.id = $1`,
+    [ratingId],
+  );
+  if (!res.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Rating not found');
+  return res.rows[0];
+}
+
 async function listRatings({ tripId, memberId, page = 1, limit = 20 } = {}) {
   const where = [];
   const params = [];
@@ -411,6 +566,8 @@ module.exports = {
   listCriteria,
   upsertCriterion,
   createRating,
+  correctRating,
+  getRatingDetail,
   listUpgradeRequests,
   listMyUpgradeRecommendations,
   reviewUpgradeRequest,

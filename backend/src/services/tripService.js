@@ -4,6 +4,7 @@ const { writeAudit } = require('./auditService');
 const { createNotification, notifyMany } = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
+const { getAdminClient } = require('../config/supabase');
 
 const MEMBERSHIP_RANK = { junior: 0, intermediate: 1, advanced: 2 };
 
@@ -112,6 +113,7 @@ async function mapTrip(row, { userId = null } = {}) {
     },
     organizer,
     organizerId: row.organizer_id,
+    createdBy: row.created_by || null,
     participants: participants.rows.map((p) => ({
       id: p.id,
       name: `${p.first_name} ${p.last_name}`.trim(),
@@ -125,6 +127,59 @@ async function mapTrip(row, { userId = null } = {}) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function extractStorageRef(urlOrPath) {
+  if (!urlOrPath || typeof urlOrPath !== 'string') return null;
+  const trimmed = urlOrPath.trim();
+  if (!trimmed) return null;
+  if (!trimmed.includes('://') && !trimmed.startsWith('/')) {
+    return { bucket: 'trips', path: trimmed };
+  }
+  const match = trimmed.match(/\/object\/public\/([^/]+)\/(.+?)(?:\?|$)/);
+  if (match) {
+    return { bucket: match[1], path: decodeURIComponent(match[2]) };
+  }
+  return null;
+}
+
+async function removeTripStorageFiles(refs) {
+  const admin = getAdminClient();
+  if (!admin || !refs.length) {
+    return { removed: 0, failed: refs.length ? refs : [] };
+  }
+
+  const byBucket = new Map();
+  for (const ref of refs) {
+    if (!ref?.bucket || !ref?.path) continue;
+    // Only trip-owned media buckets — never touch avatars/vehicles/documents
+    if (!['trips', 'gallery'].includes(ref.bucket)) continue;
+    if (!byBucket.has(ref.bucket)) byBucket.set(ref.bucket, new Set());
+    byBucket.get(ref.bucket).add(ref.path);
+  }
+
+  let removed = 0;
+  const failed = [];
+  for (const [bucket, paths] of byBucket.entries()) {
+    const list = [...paths];
+    try {
+      const { error } = await admin.storage.from(bucket).remove(list);
+      if (error) {
+        failed.push(...list.map((path) => ({ bucket, path, error: error.message })));
+      } else {
+        removed += list.length;
+      }
+    } catch (err) {
+      failed.push(
+        ...list.map((path) => ({
+          bucket,
+          path,
+          error: err instanceof Error ? err.message : 'storage_remove_failed',
+        })),
+      );
+    }
+  }
+  return { removed, failed };
 }
 
 async function getTripRow(id) {
@@ -487,6 +542,146 @@ async function softDeleteTrip(id, actor, req) {
   return { id, deleted: true };
 }
 
+/**
+ * Hard-delete a trip. Admin (trips.manage) may delete any trip.
+ * Marshall may delete only trips they personally created (created_by).
+ */
+async function permanentlyDeleteTrip(id, actor, req) {
+  const canManageAll = hasPermission(actor, 'trips.manage');
+  const canCreateOrManageOwn =
+    hasPermission(actor, 'trips.create') || hasPermission(actor, 'trips.manage_own');
+
+  if (!canManageAll && !canCreateOrManageOwn) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot permanently delete trips');
+  }
+
+  const snapshot = await withTransaction(async (client) => {
+    const tripRes = await client.query(
+      `SELECT * FROM trips WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    const trip = tripRes.rows[0];
+    if (!trip) {
+      throw new AppError(404, 'NOT_FOUND', 'Trip not found or already permanently deleted');
+    }
+
+    const isCreator = trip.created_by === actor.id;
+    if (!canManageAll && !isCreator) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'You can only permanently delete trips you created',
+      );
+    }
+    if (!canManageAll && isCreator && !canCreateOrManageOwn) {
+      throw new AppError(403, 'FORBIDDEN', 'Cannot permanently delete trips');
+    }
+
+    const counts = await client.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status IN ('registered','pending','waitlist'))::int AS active_regs,
+         COUNT(*)::int AS all_regs
+       FROM trip_registrations WHERE trip_id = $1`,
+      [id],
+    );
+
+    const mediaRes = await client.query(
+      `SELECT id, storage_path, public_url, media_type
+       FROM trip_media WHERE trip_id = $1`,
+      [id],
+    );
+
+    const storageRefs = [];
+    for (const m of mediaRes.rows) {
+      const fromPath = extractStorageRef(m.storage_path);
+      const fromUrl = extractStorageRef(m.public_url);
+      if (fromPath) storageRefs.push(fromPath);
+      if (fromUrl) storageRefs.push(fromUrl);
+    }
+    const coverRef = extractStorageRef(trip.cover_image_url);
+    if (coverRef) storageRefs.push(coverRef);
+
+    // Detach shared content; withdraw open upgrade requests tied to this trip
+    await client.query(
+      `UPDATE membership_upgrade_requests
+       SET status = 'withdrawn', updated_at = NOW()
+       WHERE trip_id = $1 AND status = 'pending'`,
+      [id],
+    );
+    await client.query(
+      `UPDATE membership_upgrade_requests SET trip_id = NULL WHERE trip_id = $1`,
+      [id],
+    );
+    await client.query(
+      `UPDATE membership_upgrade_requests SET rating_id = NULL
+       WHERE rating_id IN (SELECT id FROM trip_ratings WHERE trip_id = $1)`,
+      [id],
+    );
+
+    await client.query(
+      `DELETE FROM notifications
+       WHERE (data->>'tripId') = $1 OR (data->>'trip_id') = $1`,
+      [id],
+    );
+
+    // CASCADE removes registrations, attendance, ratings(+scores/history), trip_media, assignments
+    await client.query(`DELETE FROM trips WHERE id = $1`, [id]);
+
+    return {
+      id: trip.id,
+      title: trip.title,
+      createdBy: trip.created_by,
+      organizerId: trip.organizer_id,
+      status: trip.status,
+      wasSoftDeleted: Boolean(trip.deleted_at),
+      registrationCount: counts.rows[0].all_regs,
+      activeRegistrationCount: counts.rows[0].active_regs,
+      mediaCount: mediaRes.rows.length,
+      storageRefs,
+    };
+  });
+
+  const storage = await removeTripStorageFiles(snapshot.storageRefs);
+  if (storage.failed.length) {
+    console.warn(
+      '[trip.permanent_delete] storage cleanup incomplete',
+      JSON.stringify({ tripId: id, failed: storage.failed }),
+    );
+  }
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'trip.permanent_delete',
+    entityType: 'trips',
+    entityId: id,
+    metadata: {
+      title: snapshot.title,
+      createdBy: snapshot.createdBy,
+      organizerId: snapshot.organizerId,
+      status: snapshot.status,
+      wasSoftDeleted: snapshot.wasSoftDeleted,
+      registrationCount: snapshot.registrationCount,
+      mediaCount: snapshot.mediaCount,
+      storageRemoved: storage.removed,
+      storageFailed: storage.failed.length,
+    },
+    req,
+  });
+
+  cachePresets.trip('trip.permanent_delete');
+  cachePresets.rating('trip.permanent_delete');
+
+  return {
+    id,
+    permanentlyDeleted: true,
+    title: snapshot.title,
+    registrationCount: snapshot.registrationCount,
+    mediaRemoved: snapshot.mediaCount,
+    storageRemoved: storage.removed,
+    storageCleanupPending: storage.failed.length > 0,
+  };
+}
+
 function membershipMeets(userRank, requiredRank) {
   return (userRank ?? 0) >= (requiredRank ?? 0);
 }
@@ -820,9 +1015,184 @@ async function listMyOrganizedTrips(actor, { status, page = 1, limit = 50 } = {}
 
   const items = [];
   for (const row of result.rows) {
-    items.push(await mapTrip(row, { userId: actor.id }));
+    const mapped = await mapTrip(row, { userId: actor.id });
+    items.push({ ...mapped, accessMode: 'organizer' });
   }
   return { items, pagination: { page, limit } };
+}
+
+async function assertUserIsPreMarshall(userId) {
+  const res = await query(
+    `SELECT 1
+     FROM user_roles ur
+     JOIN roles r ON r.id = ur.role_id
+     WHERE ur.user_id = $1 AND r.code = 'pre_marshall'
+     LIMIT 1`,
+    [userId],
+  );
+  if (!res.rows[0]) {
+    throw new AppError(
+      400,
+      'NOT_PRE_MARSHALL',
+      'Member must have the Pre-Marshall role before assignment',
+    );
+  }
+}
+
+async function listPreMarshallAssignments(tripId, actor) {
+  if (!hasPermission(actor, 'trips.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot list Pre-Marshall assignments');
+  }
+  const trip = await getTripRow(tripId);
+  if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+
+  const res = await query(
+    `SELECT a.id, a.trip_id, a.user_id, a.notes, a.assigned_by, a.created_at,
+            mp.first_name, mp.last_name, mp.username, mp.avatar_url
+     FROM trip_pre_marshall_assignments a
+     JOIN member_profiles mp ON mp.id = a.user_id
+     WHERE a.trip_id = $1
+     ORDER BY a.created_at ASC`,
+    [tripId],
+  );
+
+  return res.rows.map((row) => ({
+    id: row.id,
+    tripId: row.trip_id,
+    userId: row.user_id,
+    notes: row.notes,
+    assignedBy: row.assigned_by,
+    createdAt: row.created_at,
+    name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+    username: row.username,
+    avatar: row.avatar_url,
+  }));
+}
+
+async function assignPreMarshall(tripId, { userId, notes }, actor, req) {
+  if (!hasPermission(actor, 'trips.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot assign Pre-Marshalls');
+  }
+  if (!userId) throw new AppError(400, 'VALIDATION_ERROR', 'userId is required');
+
+  const trip = await getTripRow(tripId);
+  if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+
+  await assertUserIsPreMarshall(userId);
+
+  const inserted = await query(
+    `INSERT INTO trip_pre_marshall_assignments (trip_id, user_id, assigned_by, notes)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (trip_id, user_id) DO UPDATE SET
+       notes = COALESCE(EXCLUDED.notes, trip_pre_marshall_assignments.notes),
+       assigned_by = EXCLUDED.assigned_by,
+       updated_at = NOW()
+     RETURNING *`,
+    [tripId, userId, actor.id, notes || null],
+  );
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'trip.pre_marshall.assign',
+    entityType: 'trip_pre_marshall_assignments',
+    entityId: inserted.rows[0].id,
+    metadata: { tripId, userId },
+    req,
+  });
+
+  await createNotification({
+    userId,
+    type: 'trip',
+    title: 'Drive assignment',
+    body: `You were assigned as Pre-Marshall for ${trip.title}.`,
+    data: { tripId, kind: 'pre_marshall_assignment' },
+  });
+
+  cachePresets.trip('trip.pre_marshall.assign');
+  return listPreMarshallAssignments(tripId, actor);
+}
+
+async function unassignPreMarshall(tripId, userId, actor, req) {
+  if (!hasPermission(actor, 'trips.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot unassign Pre-Marshalls');
+  }
+
+  const existing = await query(
+    `SELECT * FROM trip_pre_marshall_assignments WHERE trip_id = $1 AND user_id = $2`,
+    [tripId, userId],
+  );
+  if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Assignment not found');
+
+  await query(
+    `DELETE FROM trip_pre_marshall_assignments WHERE trip_id = $1 AND user_id = $2`,
+    [tripId, userId],
+  );
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'trip.pre_marshall.unassign',
+    entityType: 'trip_pre_marshall_assignments',
+    entityId: existing.rows[0].id,
+    metadata: { tripId, userId },
+    req,
+  });
+
+  cachePresets.trip('trip.pre_marshall.unassign');
+  return listPreMarshallAssignments(tripId, actor);
+}
+
+async function listMyAssignedTrips(actor, { status, page = 1, limit = 50 } = {}) {
+  if (!hasPermission(actor, 'trips.read')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot list assigned drives');
+  }
+
+  const where = [
+    't.deleted_at IS NULL',
+    'a.user_id = $1',
+  ];
+  const params = [actor.id];
+
+  if (status) {
+    params.push(status);
+    where.push(`t.status = $${params.length}`);
+  }
+
+  params.push(limit, (page - 1) * limit);
+  const result = await query(
+    `SELECT t.*,
+            ml.code AS required_membership_code,
+            ml.name AS required_membership_name,
+            ml.rank AS required_membership_rank
+     FROM trip_pre_marshall_assignments a
+     JOIN trips t ON t.id = a.trip_id
+     LEFT JOIN membership_levels ml ON ml.id = t.required_membership_level_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY t.trip_date DESC, t.created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+
+  const items = [];
+  for (const row of result.rows) {
+    const mapped = await mapTrip(row, { userId: actor.id });
+    items.push({ ...mapped, accessMode: 'assigned' });
+  }
+  return { items, pagination: { page, limit } };
+}
+
+async function assertCanViewAssignedTrip(tripId, actor) {
+  if (
+    hasPermission(actor, 'trips.manage') ||
+    hasPermission(actor, 'trips.manage_own') ||
+    hasPermission(actor, 'trips.create')
+  ) {
+    return true;
+  }
+  const assigned = await query(
+    `SELECT 1 FROM trip_pre_marshall_assignments WHERE trip_id = $1 AND user_id = $2`,
+    [tripId, actor.id],
+  );
+  return Boolean(assigned.rows[0]);
 }
 
 module.exports = {
@@ -833,6 +1203,7 @@ module.exports = {
   addTripMedia,
   setTripStatus,
   softDeleteTrip,
+  permanentlyDeleteTrip,
   joinTrip,
   cancelRegistration,
   markAttendance,
@@ -840,6 +1211,11 @@ module.exports = {
   reviewRegistration,
   calendar,
   listMyOrganizedTrips,
+  listMyAssignedTrips,
+  listPreMarshallAssignments,
+  assignPreMarshall,
+  unassignPreMarshall,
+  assertCanViewAssignedTrip,
   mapTrip,
   getTripRow,
 };

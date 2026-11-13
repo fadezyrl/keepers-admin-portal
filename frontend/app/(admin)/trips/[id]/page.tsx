@@ -8,7 +8,7 @@ import { api, ApiError } from "@/lib/api";
 import { useAdminQuery } from "@/lib/useAdminQuery";
 import { queryKeys, stale } from "@/lib/queryKeys";
 import { afterTripMutation } from "@/lib/invalidate";
-import type { Trip } from "@/lib/types";
+import type { Member, Paginated, Trip } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert } from "@/components/ui/Alert";
@@ -30,6 +30,73 @@ function TripDetailInner() {
   const [coverImage, setCoverImage] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaType, setMediaType] = useState<"image" | "video">("image");
+  const [preMarshallUserId, setPreMarshallUserId] = useState("");
+  const [preMarshallNotes, setPreMarshallNotes] = useState("");
+  const [confirmPermanent, setConfirmPermanent] = useState("");
+  const [deletingPermanent, setDeletingPermanent] = useState(false);
+  const assignments = useAdminQuery(
+    ["trips", id, "pre-marshalls"],
+    (signal) =>
+      api.get<
+        Array<{
+          id: string;
+          userId: string;
+          name: string;
+          username?: string;
+          notes?: string | null;
+        }>
+      >(`/trips/${id}/pre-marshalls`, { signal }),
+    { staleTime: stale.operational, enabled: Boolean(id) },
+  );
+  const preMarshallCandidates = useAdminQuery(
+    ["members", "pre_marshall", "candidates"],
+    (signal) =>
+      api.get<Paginated<Member>>(`/members?role=pre_marshall&limit=100`, {
+        signal,
+      }),
+    { staleTime: stale.list },
+  );
+
+  async function assignPreMarshall(e: FormEvent) {
+    e.preventDefault();
+    if (!preMarshallUserId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.post(`/trips/${id}/pre-marshalls`, {
+        userId: preMarshallUserId,
+        notes: preMarshallNotes.trim() || undefined,
+      });
+      setPreMarshallUserId("");
+      setPreMarshallNotes("");
+      setMessage("Pre-Marshall assigned");
+      await Promise.all([
+        afterTripMutation(queryClient),
+        queryClient.invalidateQueries({ queryKey: ["trips", id, "pre-marshalls"] }),
+      ]);
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "Failed to assign Pre-Marshall");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unassignPreMarshall(userId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.delete(`/trips/${id}/pre-marshalls/${userId}`);
+      setMessage("Pre-Marshall unassigned");
+      await Promise.all([
+        afterTripMutation(queryClient),
+        queryClient.invalidateQueries({ queryKey: ["trips", id, "pre-marshalls"] }),
+      ]);
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "Failed to unassign Pre-Marshall");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function setStatus(status: string) {
     setBusy(true);
@@ -41,6 +108,58 @@ function TripDetailInner() {
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to update trip");
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function softDeleteTrip() {
+    if (
+      !window.confirm(
+        `Soft-delete “${data?.title || "this trip"}”? It will hide from lists but remain in the database.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.delete(`/trips/${id}`);
+      setMessage("Trip soft-deleted (hidden from lists)");
+      await afterTripMutation(queryClient);
+      window.location.href = "/trips";
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "Failed to soft-delete trip");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function permanentlyDeleteTrip() {
+    if (!data) return;
+    if (confirmPermanent.trim() !== data.title) {
+      setMessage("Type the exact trip title to confirm permanent deletion.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `PERMANENTLY delete “${data.title}”? This cannot be undone.\n\nWill remove: registrations, attendance, trip ratings/history, trip media, Pre-Marshall assignments.\nUpgrade requests linked to this trip will be detached/withdrawn.\nMember profiles stay intact.`,
+      )
+    ) {
+      return;
+    }
+    setDeletingPermanent(true);
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.delete(`/trips/${id}/permanent`);
+      await afterTripMutation(queryClient);
+      window.location.href = "/trips";
+    } catch (err) {
+      setMessage(
+        err instanceof ApiError ? err.message : "Failed to permanently delete trip",
+      );
+    } finally {
+      setDeletingPermanent(false);
       setBusy(false);
     }
   }
@@ -295,48 +414,179 @@ function TripDetailInner() {
               >
                 Cancel trip
               </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy}
+                onClick={() => void softDeleteTrip()}
+              >
+                Soft delete
+              </button>
+            </div>
+
+            <div className="mt-8 border border-[var(--keepers-danger,#8b1e1e)] bg-[rgba(139,30,30,0.06)] p-4">
+              <h3 className="font-display m-0 text-xl text-[var(--keepers-danger,#8b1e1e)]">
+                Permanent deletion
+              </h3>
+              <p className="mt-2 mb-0 text-sm text-[var(--keepers-muted)]">
+                Removes this trip from the database. Registrations, attendance, trip ratings,
+                rating history, trip media and Pre-Marshall assignments are deleted. Pending
+                upgrade requests for this trip are withdrawn. Member accounts are not deleted.
+              </p>
+              <p className="mt-2 mb-0 text-sm">
+                Current registrations (incl. waitlist/pending):{" "}
+                <strong>
+                  {(data.registeredCount ?? 0) + (data.waitlistCount ?? 0)}
+                </strong>
+              </p>
+              <label className="mt-4 block">
+                <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                  Type trip title to confirm: {data.title}
+                </span>
+                <input
+                  className="admin-input"
+                  value={confirmPermanent}
+                  onChange={(e) => setConfirmPermanent(e.target.value)}
+                  placeholder={data.title}
+                  disabled={busy}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn btn-danger mt-4"
+                disabled={
+                  busy ||
+                  deletingPermanent ||
+                  confirmPermanent.trim() !== data.title
+                }
+                onClick={() => void permanentlyDeleteTrip()}
+              >
+                {deletingPermanent ? "Deleting…" : "Permanently delete trip"}
+              </button>
             </div>
           </div>
         </section>
 
-        <section className="panel">
-          <div className="border-b border-[var(--keepers-line)] px-5 py-4">
-            <h2 className="font-display m-0 text-2xl">Participants</h2>
-            <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
-              Registrations for this trip
-            </p>
-          </div>
-          {(data.participants || []).length === 0 ? (
-            <EmptyBlock
-              title="No registrations"
-              description="Members who join this trip will appear here."
-            />
-          ) : (
-            <ul className="m-0 list-none divide-y divide-[var(--keepers-line)] p-0">
-              {data.participants!.map((p) => (
-                <li key={p.id} className="flex items-center justify-between gap-3 px-5 py-4">
-                  <div>
-                    <Link href={`/members/${p.id}`} className="font-medium hover:underline">
-                      {p.name}
-                    </Link>
-                    <div className="mt-1 flex items-center gap-2 text-sm text-[var(--keepers-muted)]">
-                      <StatusBadge status={p.registrationStatus} />
-                      {p.vehicle ? <span>{p.vehicle}</span> : null}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={busy}
-                    onClick={() => markAttendance(p.id, true)}
+        <div className="space-y-6">
+          <section className="panel">
+            <div className="border-b border-[var(--keepers-line)] px-5 py-4">
+              <h2 className="font-display m-0 text-2xl">Pre-Marshalls</h2>
+              <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
+                Assigned Pre-Marshalls get view-only access to this drive in the app
+              </p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <form onSubmit={assignPreMarshall} className="space-y-3">
+                <label className="block">
+                  <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                    Pre-Marshall
+                  </span>
+                  <select
+                    className="admin-input"
+                    value={preMarshallUserId}
+                    onChange={(e) => setPreMarshallUserId(e.target.value)}
                   >
-                    Attended
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                    <option value="">Select member…</option>
+                    {(preMarshallCandidates.data?.items || []).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || `${m.firstName || ""} ${m.lastName || ""}`.trim()}
+                        {m.username ? ` (@${m.username})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                    Notes (optional)
+                  </span>
+                  <input
+                    className="admin-input"
+                    value={preMarshallNotes}
+                    onChange={(e) => setPreMarshallNotes(e.target.value)}
+                    placeholder="Assignment note"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  className="btn btn-secondary"
+                  disabled={busy || !preMarshallUserId}
+                >
+                  Assign
+                </button>
+              </form>
+              {assignments.loading ? <LoadingBlock /> : null}
+              {assignments.error ? <ErrorBlock message={assignments.error} /> : null}
+              {!assignments.loading && (assignments.data || []).length === 0 ? (
+                <EmptyBlock
+                  title="No Pre-Marshalls assigned"
+                  description="Assign a member who already has the pre_marshall role."
+                />
+              ) : null}
+              <ul className="m-0 list-none divide-y divide-[var(--keepers-line)] p-0">
+                {(assignments.data || []).map((a) => (
+                  <li key={a.id} className="flex items-center justify-between gap-3 py-3">
+                    <div>
+                      <div className="font-medium">{a.name}</div>
+                      {a.username ? (
+                        <div className="text-sm text-[var(--keepers-muted)]">@{a.username}</div>
+                      ) : null}
+                      {a.notes ? (
+                        <div className="mt-1 text-sm text-[var(--keepers-muted)]">{a.notes}</div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={busy}
+                      onClick={() => void unassignPreMarshall(a.userId)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="border-b border-[var(--keepers-line)] px-5 py-4">
+              <h2 className="font-display m-0 text-2xl">Participants</h2>
+              <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
+                Registrations for this trip
+              </p>
+            </div>
+            {(data.participants || []).length === 0 ? (
+              <EmptyBlock
+                title="No registrations"
+                description="Members who join this trip will appear here."
+              />
+            ) : (
+              <ul className="m-0 list-none divide-y divide-[var(--keepers-line)] p-0">
+                {data.participants!.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between gap-3 px-5 py-4">
+                    <div>
+                      <Link href={`/members/${p.id}`} className="font-medium hover:underline">
+                        {p.name}
+                      </Link>
+                      <div className="mt-1 flex items-center gap-2 text-sm text-[var(--keepers-muted)]">
+                        <StatusBadge status={p.registrationStatus} />
+                        {p.vehicle ? <span>{p.vehicle}</span> : null}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={busy}
+                      onClick={() => markAttendance(p.id, true)}
+                    >
+                      Attended
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );
