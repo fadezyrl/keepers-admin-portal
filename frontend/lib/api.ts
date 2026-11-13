@@ -3,10 +3,13 @@ import type { ApiResponse } from "./types";
 const TOKEN_KEY = "keepers_admin_token";
 
 export function getApiBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://localhost:4000/api"
-  );
+  const base = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/$/, "");
+  if (!base) {
+    throw new Error(
+      "Missing NEXT_PUBLIC_API_URL. Set it in frontend/.env (see .env.example).",
+    );
+  }
+  return base;
 }
 
 export function getStoredToken(): string | null {
@@ -41,6 +44,8 @@ type RequestOptions = {
   auth?: boolean;
   headers?: Record<string, string>;
   formData?: FormData;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export async function apiRequest<T>(
@@ -54,6 +59,8 @@ export async function apiRequest<T>(
     auth = true,
     headers = {},
     formData,
+    signal,
+    timeoutMs = 30000,
   } = options;
 
   const url = `${getApiBase()}${path.startsWith("/") ? path : `/${path}`}`;
@@ -72,11 +79,31 @@ export async function apiRequest<T>(
     payload = JSON.stringify(body);
   }
 
-  const res = await fetch(url, {
-    method,
-    headers: reqHeaders,
-    body: payload,
-  });
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: reqHeaders,
+      body: payload,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new ApiError("Request timed out or was cancelled", "TIMEOUT", 408);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+    if (signal) signal.removeEventListener("abort", onAbort);
+  }
 
   let json: ApiResponse<T> | null = null;
   try {

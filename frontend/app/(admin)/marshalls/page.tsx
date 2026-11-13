@@ -1,13 +1,18 @@
 "use client";
 
-import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { api, buildQuery } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import type { Member, Paginated } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { DataTable, type DataColumn } from "@/components/ui/DataTable";
+import { FilterBar, SearchInput } from "@/components/ui/FilterBar";
+import { RowActions } from "@/components/ui/RowActions";
+import { MemberDrawer } from "@/components/admin/MemberDrawer";
+
+type MarshallRow = Member & { roleLabels: string[] };
 
 async function loadMarshalls() {
   const [marshall, pre] = await Promise.all([
@@ -19,7 +24,7 @@ async function loadMarshalls() {
     ),
   ]);
 
-  const map = new Map<string, Member & { roleLabels: string[] }>();
+  const map = new Map<string, MarshallRow>();
   for (const m of marshall.items) {
     map.set(m.id, { ...m, roleLabels: ["marshall"] });
   }
@@ -32,58 +37,98 @@ async function loadMarshalls() {
 }
 
 export default function MarshallsPage() {
-  const { data, error, loading } = useAsync(loadMarshalls, []);
-  const rows = useMemo(() => data || [], [data]);
+  const { data, error, loading, refreshing } = useAsync(loadMarshalls, []);
+  const [q, setQ] = useState("");
+  const debouncedQ = useDebouncedValue(q, 250);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+
+  const rows = useMemo(() => {
+    const all = data || [];
+    const term = debouncedQ.trim().toLowerCase();
+    if (!term) return all;
+    return all.filter(
+      (m) =>
+        m.name.toLowerCase().includes(term) ||
+        m.email.toLowerCase().includes(term) ||
+        m.username.toLowerCase().includes(term),
+    );
+  }, [data, debouncedQ]);
+
+  const columns: DataColumn<MarshallRow>[] = [
+    {
+      key: "name",
+      header: "Name",
+      cell: (m) => (
+        <div>
+          <div className="font-medium">{m.name}</div>
+          <div className="text-sm text-[var(--keepers-muted)]">@{m.username}</div>
+        </div>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (m) => <StatusBadge status={m.status} />,
+    },
+    {
+      key: "roles",
+      header: "Roles",
+      cell: (m) => m.roleLabels.join(", "),
+    },
+    {
+      key: "membership",
+      header: "Membership",
+      cell: (m) => m.membership || "—",
+    },
+    {
+      key: "contact",
+      header: "Contact",
+      cell: (m) => <span className="text-sm">{m.email}</span>,
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (m) => (
+        <RowActions
+          actions={[{ label: "View", onClick: () => setDrawerId(m.id) }]}
+        />
+      ),
+    },
+  ];
 
   return (
     <div>
       <PageHeader
         title="Marshalls"
-        subtitle="Members with marshall or pre-marshall roles."
+        subtitle="Members with marshall or pre-marshall roles. Open a profile to manage permissions."
       />
 
-      {loading ? <LoadingBlock /> : null}
-      {error ? <ErrorBlock message={error} /> : null}
-      {!loading && !error && rows.length === 0 ? (
-        <EmptyBlock
-          title="No marshalls yet"
-          description="Assign marshall or pre_marshall roles from a member profile."
-        />
-      ) : null}
+      <DataTable
+        columns={columns}
+        rows={rows}
+        loading={loading}
+        refreshing={refreshing}
+        error={error}
+        emptyTitle="No marshalls yet"
+        emptyDescription="Assign marshall or pre_marshall roles from a member profile."
+        onRowClick={(m) => setDrawerId(m.id)}
+        toolbar={
+          <FilterBar>
+            <SearchInput
+              value={q}
+              onChange={setQ}
+              placeholder="Search marshalls…"
+              className="max-w-sm min-w-[14rem] flex-1"
+            />
+          </FilterBar>
+        }
+      />
 
-      {!loading && !error && rows.length > 0 ? (
-        <div className="panel overflow-x-auto">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Roles</th>
-                <th>Membership</th>
-                <th>Contact</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((m) => (
-                <tr key={m.id}>
-                  <td>
-                    <Link href={`/members/${m.id}`} className="font-medium hover:underline">
-                      {m.name}
-                    </Link>
-                    <div className="text-sm text-[var(--keepers-muted)]">@{m.username}</div>
-                  </td>
-                  <td>
-                    <StatusBadge status={m.status} />
-                  </td>
-                  <td className="text-sm">{m.roleLabels.join(", ")}</td>
-                  <td>{m.membership || "—"}</td>
-                  <td className="text-sm">{m.email}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+      <MemberDrawer
+        memberId={drawerId}
+        open={Boolean(drawerId)}
+        onClose={() => setDrawerId(null)}
+      />
     </div>
   );
 }

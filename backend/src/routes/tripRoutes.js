@@ -60,6 +60,35 @@ router.get(
 );
 
 router.get(
+  '/registrations',
+  requirePermission('registrations.manage', 'trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.listRegistrations({
+      tripId: req.query.tripId,
+      status: req.query.status || 'all',
+      q: req.query.q,
+      page: Number(req.query.page || 1),
+      limit: Number(req.query.limit || 50),
+    });
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/registrations/:registrationId/review',
+  requirePermission('registrations.manage', 'trips.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.reviewRegistration(
+      req.params.registrationId,
+      req.body,
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Registration updated');
+  }),
+);
+
+router.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const data = await tripService.getTrip(req.params.id, req.user.id);
@@ -82,6 +111,16 @@ router.patch(
   asyncHandler(async (req, res) => {
     const data = await tripService.updateTrip(req.params.id, req.body, req.user, req);
     return ok(res, data, 'Trip updated');
+  }),
+);
+
+router.post(
+  '/:id/media',
+  requirePermission('trips.manage', 'trips.manage_own', 'media.manage'),
+  asyncHandler(async (req, res) => {
+    const media = await tripService.addTripMedia(req.params.id, req.body, req.user);
+    const data = await tripService.getTrip(req.params.id, req.user.id);
+    return ok(res, { media, trip: data }, 'Media attached');
   }),
 );
 

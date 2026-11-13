@@ -6,6 +6,11 @@ const { hasPermission } = require('../middleware/auth');
 
 const MEMBERSHIP_RANK = { junior: 0, intermediate: 1, advanced: 2 };
 
+function isVideoUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  return /\.(mp4|mov|webm|m4v)(\?|$)/i.test(url) || /\/video\//i.test(url);
+}
+
 async function mapTrip(row, { userId = null } = {}) {
   const media = await query(
     `SELECT id, media_type, public_url, thumbnail_url, caption, display_order
@@ -71,6 +76,7 @@ async function mapTrip(row, { userId = null } = {}) {
   const registeredCount = counts.rows[0].registered_count;
   let clientStatus = row.status;
   if (myRegistration?.status === 'registered') clientStatus = 'registered';
+  else if (myRegistration?.status === 'pending') clientStatus = 'pending';
   else if (myRegistration?.status === 'waitlist') clientStatus = 'waitlist';
   else if (row.status === 'published' && registeredCount >= row.max_participants) clientStatus = 'full';
   else if (row.status === 'published') clientStatus = 'upcoming';
@@ -263,9 +269,21 @@ async function createTrip(payload, actor, req) {
   if (Array.isArray(payload.gallery)) {
     let order = 0;
     for (const url of payload.gallery) {
+      const mediaType = isVideoUrl(url) ? 'video' : 'image';
       await query(
         `INSERT INTO trip_media (trip_id, media_type, storage_path, public_url, display_order, uploaded_by)
-         VALUES ($1, 'image', $2, $2, $3, $4)`,
+         VALUES ($1, $2, $3, $3, $4, $5)`,
+        [tripId, mediaType, url, order++, actor.id],
+      );
+    }
+  }
+
+  if (Array.isArray(payload.videos)) {
+    let order = 100;
+    for (const url of payload.videos) {
+      await query(
+        `INSERT INTO trip_media (trip_id, media_type, storage_path, public_url, display_order, uploaded_by)
+         VALUES ($1, 'video', $2, $2, $3, $4)`,
         [tripId, url, order++, actor.id],
       );
     }
@@ -349,6 +367,17 @@ async function updateTrip(id, payload, actor, req) {
     ],
   );
 
+  if (Array.isArray(payload.gallery)) {
+    for (const url of payload.gallery) {
+      await addTripMedia(id, { url, mediaType: isVideoUrl(url) ? 'video' : 'image' }, actor);
+    }
+  }
+  if (Array.isArray(payload.videos)) {
+    for (const url of payload.videos) {
+      await addTripMedia(id, { url, mediaType: 'video' }, actor);
+    }
+  }
+
   await writeAudit({
     actorId: actor.id,
     action: 'trip.update',
@@ -358,6 +387,25 @@ async function updateTrip(id, payload, actor, req) {
   });
 
   return getTrip(id, actor.id);
+}
+
+async function addTripMedia(tripId, payload, actor) {
+  const url = payload.url || payload.publicUrl;
+  if (!url) throw new AppError(400, 'VALIDATION_ERROR', 'Media URL is required');
+  const mediaType =
+    payload.mediaType || (isVideoUrl(url) ? 'video' : 'image');
+  const orderRes = await query(
+    `SELECT COALESCE(MAX(display_order), 0)::int AS n FROM trip_media WHERE trip_id = $1`,
+    [tripId],
+  );
+  const order = (orderRes.rows[0]?.n || 0) + 1;
+  const inserted = await query(
+    `INSERT INTO trip_media (trip_id, media_type, storage_path, public_url, caption, display_order, uploaded_by)
+     VALUES ($1, $2, $3, $3, $4, $5, $6)
+     RETURNING *`,
+    [tripId, mediaType, url, payload.caption || null, order, actor.id],
+  );
+  return inserted.rows[0];
 }
 
 async function setTripStatus(id, status, actor, req, reason) {
@@ -419,6 +467,21 @@ function membershipMeets(userRank, requiredRank) {
   return (userRank ?? 0) >= (requiredRank ?? 0);
 }
 
+async function getBoolSetting(key, fallback = false) {
+  const res = await query(`SELECT value FROM app_settings WHERE key = $1`, [key]);
+  if (!res.rows[0]) return fallback;
+  const value = res.rows[0].value;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value === 'true';
+  if (value && typeof value === 'object' && 'value' in value) {
+    return Boolean(value.value);
+  }
+  // jsonb booleans / strings
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return fallback;
+}
+
 async function joinTrip(tripId, user, req) {
   const trip = await getTripRow(tripId);
   if (!trip || trip.status !== 'published') {
@@ -450,15 +513,24 @@ async function joinTrip(tripId, user, req) {
     `SELECT * FROM trip_registrations WHERE trip_id = $1 AND user_id = $2`,
     [tripId, user.id],
   );
-  if (existing.rows[0] && existing.rows[0].status !== 'cancelled') {
+  if (
+    existing.rows[0] &&
+    !['cancelled', 'rejected'].includes(existing.rows[0].status)
+  ) {
     throw new AppError(409, 'ALREADY_REGISTERED', 'You are already registered for this trip');
   }
 
+  const requiresApproval = await getBoolSetting('trip_join_requires_approval', false);
   const countRes = await query(
     `SELECT COUNT(*)::int AS n FROM trip_registrations WHERE trip_id = $1 AND status = 'registered'`,
     [tripId],
   );
-  const status = countRes.rows[0].n >= trip.max_participants ? 'waitlist' : 'registered';
+  let status = 'registered';
+  if (requiresApproval) {
+    status = 'pending';
+  } else if (countRes.rows[0].n >= trip.max_participants) {
+    status = 'waitlist';
+  }
 
   let registration;
   if (existing.rows[0]) {
@@ -643,13 +715,189 @@ module.exports = {
   getTrip,
   createTrip,
   updateTrip,
+  addTripMedia,
   setTripStatus,
   softDeleteTrip,
   joinTrip,
   cancelRegistration,
   markAttendance,
+  listRegistrations,
+  reviewRegistration,
   calendar,
   listMyOrganizedTrips,
   mapTrip,
   getTripRow,
 };
+
+async function listRegistrations({
+  tripId,
+  status,
+  q,
+  page = 1,
+  limit = 50,
+} = {}) {
+  const where = ['1=1'];
+  const params = [];
+
+  if (tripId) {
+    params.push(tripId);
+    where.push(`tr.trip_id = $${params.length}`);
+  }
+  if (status && status !== 'all') {
+    params.push(status);
+    where.push(`tr.status = $${params.length}`);
+  }
+  if (q) {
+    params.push(`%${q}%`);
+    where.push(
+      `(mp.first_name ILIKE $${params.length} OR mp.last_name ILIKE $${params.length} OR mp.username ILIKE $${params.length} OR t.title ILIKE $${params.length})`,
+    );
+  }
+
+  params.push(limit, (page - 1) * limit);
+  const result = await query(
+    `SELECT tr.id, tr.trip_id, tr.user_id, tr.status, tr.registered_at, tr.cancelled_at,
+            tr.notes, tr.reviewed_by, tr.reviewed_at,
+            t.title AS trip_title, t.trip_date, t.destination, t.max_participants,
+            mp.first_name, mp.last_name, mp.username, mp.avatar_url,
+            ml.name AS membership_name
+     FROM trip_registrations tr
+     JOIN trips t ON t.id = tr.trip_id AND t.deleted_at IS NULL
+     JOIN member_profiles mp ON mp.id = tr.user_id
+     LEFT JOIN membership_levels ml ON ml.id = mp.membership_level_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY tr.registered_at DESC NULLS LAST, tr.created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+
+  const countParams = params.slice(0, params.length - 2);
+  const total = await query(
+    `SELECT COUNT(*)::int AS n
+     FROM trip_registrations tr
+     JOIN trips t ON t.id = tr.trip_id AND t.deleted_at IS NULL
+     JOIN member_profiles mp ON mp.id = tr.user_id
+     WHERE ${where.join(' AND ')}`,
+    countParams,
+  );
+
+  return {
+    items: result.rows.map((row) => ({
+      id: row.id,
+      tripId: row.trip_id,
+      userId: row.user_id,
+      status: row.status,
+      registeredAt: row.registered_at,
+      cancelledAt: row.cancelled_at,
+      notes: row.notes,
+      reviewedBy: row.reviewed_by,
+      reviewedAt: row.reviewed_at,
+      tripTitle: row.trip_title,
+      tripDate: row.trip_date,
+      destination: row.destination,
+      maxParticipants: row.max_participants,
+      memberName: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+      username: row.username,
+      avatar: row.avatar_url,
+      membership: row.membership_name,
+    })),
+    page,
+    limit,
+    total: total.rows[0]?.n || 0,
+  };
+}
+
+async function reviewRegistration(registrationId, payload, actor, req) {
+  if (!hasPermission(actor, 'registrations.manage') && !hasPermission(actor, 'trips.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage registrations');
+  }
+
+  const nextStatus = payload.status;
+  const allowed = ['registered', 'waitlist', 'rejected', 'cancelled', 'pending'];
+  if (!allowed.includes(nextStatus)) {
+    throw new AppError(400, 'INVALID_STATUS', 'Invalid registration status');
+  }
+
+  const existing = await query(`SELECT * FROM trip_registrations WHERE id = $1`, [
+    registrationId,
+  ]);
+  if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Registration not found');
+  const row = existing.rows[0];
+
+  if (nextStatus === 'registered') {
+    const trip = await getTripRow(row.trip_id);
+    const countRes = await query(
+      `SELECT COUNT(*)::int AS n FROM trip_registrations
+       WHERE trip_id = $1 AND status = 'registered' AND id <> $2`,
+      [row.trip_id, registrationId],
+    );
+    if (trip && countRes.rows[0].n >= trip.max_participants) {
+      throw new AppError(409, 'TRIP_FULL', 'Trip is full — move to waitlist instead');
+    }
+  }
+
+  const updated = await query(
+    `UPDATE trip_registrations SET
+       status = $1,
+       notes = COALESCE($2, notes),
+       reviewed_by = $3,
+       reviewed_at = NOW(),
+       cancelled_at = CASE WHEN $1 = 'cancelled' THEN NOW() ELSE cancelled_at END,
+       updated_at = NOW()
+     WHERE id = $4
+     RETURNING *`,
+    [nextStatus, payload.notes || null, actor.id, registrationId],
+  );
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'registration.review',
+    entityType: 'trip_registrations',
+    entityId: registrationId,
+    metadata: { status: nextStatus, tripId: row.trip_id },
+    req,
+  });
+
+  await createNotification({
+    userId: row.user_id,
+    type: 'registration',
+    title: 'Registration update',
+    body: `Your trip registration is now “${nextStatus}”.`,
+    data: { tripId: row.trip_id, status: nextStatus },
+  });
+
+  // If a registered seat was cancelled/rejected, promote waitlist
+  if (['cancelled', 'rejected'].includes(nextStatus) && row.status === 'registered') {
+    const trip = await getTripRow(row.trip_id);
+    if (trip) {
+      const countRes = await query(
+        `SELECT COUNT(*)::int AS n FROM trip_registrations WHERE trip_id = $1 AND status = 'registered'`,
+        [row.trip_id],
+      );
+      if (countRes.rows[0].n < trip.max_participants) {
+        const next = await query(
+          `SELECT * FROM trip_registrations
+           WHERE trip_id = $1 AND status = 'waitlist'
+           ORDER BY registered_at ASC NULLS LAST, created_at ASC
+           LIMIT 1`,
+          [row.trip_id],
+        );
+        if (next.rows[0]) {
+          await query(
+            `UPDATE trip_registrations SET status = 'registered', updated_at = NOW() WHERE id = $1`,
+            [next.rows[0].id],
+          );
+          await createNotification({
+            userId: next.rows[0].user_id,
+            type: 'registration',
+            title: 'Waitlist promoted',
+            body: `A seat opened — you are now registered for ${trip.title}.`,
+            data: { tripId: row.trip_id, status: 'registered' },
+          });
+        }
+      }
+    }
+  }
+
+  return updated.rows[0];
+}

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   addMonths,
@@ -18,16 +17,20 @@ import { api, buildQuery } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
 import type { Paginated, Trip } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
+import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { DataTable, type DataColumn } from "@/components/ui/DataTable";
+import { TableSkeleton } from "@/components/ui/Skeleton";
+import { TripQuickDrawer } from "@/components/admin/TripDrawer";
 
 export default function CalendarPage() {
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
+  const [tripId, setTripId] = useState<string | null>(null);
 
   const from = format(startOfMonth(cursor), "yyyy-MM-dd");
   const to = format(endOfMonth(cursor), "yyyy-MM-dd");
 
-  const { data, error, loading } = useAsync(
+  const { data, error, loading, refreshing } = useAsync(
     () =>
       api.get<Paginated<Trip>>(
         `/trips/calendar${buildQuery({ from, to, includeDrafts: true })}`,
@@ -53,11 +56,39 @@ export default function CalendarPage() {
 
   const monthTrips = data?.items || [];
 
+  const columns: DataColumn<Trip>[] = [
+    {
+      key: "date",
+      header: "Date",
+      cell: (t) => (
+        <>
+          {format(parseISO(String(t.date).slice(0, 10)), "dd MMM")}
+          {t.time ? ` · ${String(t.time).slice(0, 5)}` : ""}
+        </>
+      ),
+    },
+    {
+      key: "trip",
+      header: "Trip",
+      cell: (t) => <span className="font-medium">{t.title}</span>,
+    },
+    {
+      key: "destination",
+      header: "Destination",
+      cell: (t) => t.destination,
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (t) => <StatusBadge status={t.publishStatus || t.status} />,
+    },
+  ];
+
   return (
     <div>
       <PageHeader
         title="Calendar"
-        subtitle="Month view of trips from the Keepers calendar API."
+        subtitle="Month view of trips — open a trip drawer without leaving the calendar."
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -87,11 +118,11 @@ export default function CalendarPage() {
 
       <p className="font-display mb-6 text-3xl">{format(cursor, "MMMM yyyy")}</p>
 
-      {loading ? <LoadingBlock /> : null}
-      {error ? <ErrorBlock message={error} /> : null}
+      {loading && !data ? <TableSkeleton rows={4} cols={7} /> : null}
+      {error && !data ? <ErrorBlock message={error} /> : null}
 
-      {!loading && !error ? (
-        <div className="panel overflow-hidden">
+      {data || (!loading && !error) ? (
+        <div className={`panel overflow-hidden ${refreshing ? "table-refreshing" : ""}`}>
           <div className="grid grid-cols-7 border-b border-[var(--keepers-line)] bg-[var(--keepers-cream)]">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
               <div
@@ -126,13 +157,14 @@ export default function CalendarPage() {
                   <ul className="mt-1 list-none space-y-1 p-0">
                     {dayTrips.slice(0, 3).map((t) => (
                       <li key={t.id}>
-                        <Link
-                          href={`/trips/${t.id}`}
-                          className="block truncate text-xs leading-snug hover:underline"
+                        <button
+                          type="button"
+                          className="block w-full truncate text-left text-xs leading-snug hover:underline"
                           title={t.title}
+                          onClick={() => setTripId(t.id)}
                         >
                           {t.title}
-                        </Link>
+                        </button>
                       </li>
                     ))}
                     {dayTrips.length > 3 ? (
@@ -148,49 +180,25 @@ export default function CalendarPage() {
         </div>
       ) : null}
 
-      {!loading && !error ? (
-        <section className="mt-8">
-          <h2 className="font-display mb-4 text-2xl">Trips this month</h2>
-          {monthTrips.length === 0 ? (
-            <EmptyBlock
-              title="No trips scheduled"
-              description="Nothing in this month range from the calendar API."
-            />
-          ) : (
-            <div className="panel overflow-x-auto">
-              <table className="admin-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Trip</th>
-                    <th>Destination</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthTrips.map((t) => (
-                    <tr key={t.id}>
-                      <td>
-                        {format(parseISO(String(t.date).slice(0, 10)), "dd MMM")}
-                        {t.time ? ` · ${String(t.time).slice(0, 5)}` : ""}
-                      </td>
-                      <td>
-                        <Link href={`/trips/${t.id}`} className="hover:underline">
-                          {t.title}
-                        </Link>
-                      </td>
-                      <td>{t.destination}</td>
-                      <td>
-                        <StatusBadge status={t.publishStatus || t.status} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
+      <section className="mt-8">
+        <h2 className="font-display mb-4 text-2xl">Trips this month</h2>
+        <DataTable
+          columns={columns}
+          rows={monthTrips}
+          loading={loading && monthTrips.length === 0}
+          refreshing={refreshing}
+          error={error}
+          emptyTitle="No trips scheduled"
+          emptyDescription="Nothing in this month range from the calendar API."
+          onRowClick={(t) => setTripId(t.id)}
+        />
+      </section>
+
+      <TripQuickDrawer
+        tripId={tripId}
+        open={Boolean(tripId)}
+        onClose={() => setTripId(null)}
+      />
     </div>
   );
 }

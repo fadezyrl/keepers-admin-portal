@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "migrate": "node scripts/migrate.js",
     "inspect-db": "node scripts/inspect-db.js",
-    "seed:admin": "node scripts/seed-admin.js"
+    "seed:admin": "node scripts/seed-admin.js",
+    "seed:demo": "node scripts/seed-demo-content.js"
   },
   "keywords": ["keepers", "adventures", "api"],
   "author": "",

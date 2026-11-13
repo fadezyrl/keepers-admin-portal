@@ -107,6 +107,12 @@ export type Trip = {
   minTripsRequired?: number;
   coverImage?: string | null;
   gallery?: string[];
+  media?: Array<{
+    id?: string;
+    media_type?: string;
+    public_url?: string;
+    caption?: string | null;
+  }>;
   maxParticipants?: number;
   registeredCount?: number;
   waitlistCount?: number;

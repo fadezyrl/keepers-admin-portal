@@ -29,6 +29,78 @@ router.get(
 );
 
 router.get(
+  '/versions',
+  authenticate,
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await contentService.getContentVersions(req.user.id);
+    return ok(res, data);
+  }),
+);
+
+router.get(
+  '/hero-slides',
+  authenticate,
+  requirePermission('media.manage', 'dashboard.read'),
+  asyncHandler(async (req, res) => {
+    const activeOnly = req.query.activeOnly === 'true';
+    const data = await contentService.listHeroSlides({ activeOnly });
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/hero-slides',
+  authenticate,
+  requirePermission('media.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await contentService.upsertHeroSlide(req.body, req.user, req);
+    return ok(res, data, 'Hero slide saved');
+  }),
+);
+
+router.delete(
+  '/hero-slides/:id',
+  authenticate,
+  requirePermission('media.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await contentService.deleteHeroSlide(req.params.id, req.user, req);
+    return ok(res, data);
+  }),
+);
+
+router.get(
+  '/gallery',
+  authenticate,
+  requirePermission('media.manage', 'dashboard.read'),
+  asyncHandler(async (req, res) => {
+    const activeOnly = req.query.activeOnly === 'true';
+    const data = await contentService.listGallery({ activeOnly });
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/gallery',
+  authenticate,
+  requirePermission('media.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await contentService.upsertGalleryItem(req.body, req.user, req);
+    return ok(res, data, 'Gallery item saved');
+  }),
+);
+
+router.delete(
+  '/gallery/:id',
+  authenticate,
+  requirePermission('media.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await contentService.deleteGalleryItem(req.params.id, req.user, req);
+    return ok(res, data);
+  }),
+);
+
+router.get(
   '/sponsors',
   authenticate,
   requireApprovedMember,
@@ -46,6 +118,20 @@ router.post(
   asyncHandler(async (req, res) => {
     const data = await contentService.upsertSponsor(req.body, req.user, req);
     return ok(res, data, 'Sponsor saved');
+  }),
+);
+
+router.post(
+  '/sponsors/reorder',
+  authenticate,
+  requirePermission('sponsors.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await contentService.reorderSponsors(
+      req.body.orderedIds || req.body.ids,
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Sponsors reordered');
   }),
 );
 

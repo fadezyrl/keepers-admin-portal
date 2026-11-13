@@ -26,7 +26,26 @@ router.get(
     const permissions = await query(
       `SELECT id, code, name, description FROM permissions ORDER BY code`,
     );
-    return ok(res, { roles: roles.rows, permissions: permissions.rows });
+    const grants = await query(
+      `SELECT r.code AS role_code, p.code AS permission_code
+       FROM role_permissions rp
+       JOIN roles r ON r.id = rp.role_id
+       JOIN permissions p ON p.id = rp.permission_id
+       ORDER BY r.code, p.code`,
+    );
+    const permissionsByRole = {};
+    for (const row of grants.rows) {
+      if (!permissionsByRole[row.role_code]) permissionsByRole[row.role_code] = [];
+      permissionsByRole[row.role_code].push(row.permission_code);
+    }
+    return ok(res, {
+      roles: roles.rows.map((r) => ({
+        ...r,
+        permissions: permissionsByRole[r.code] || [],
+      })),
+      permissions: permissions.rows,
+      permissionsByRole,
+    });
   }),
 );
 

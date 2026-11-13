@@ -3,20 +3,29 @@
 import { FormEvent, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
+import { useToast } from "@/lib/toast";
 import type { AppSetting, RatingCriterion } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Alert } from "@/components/ui/Alert";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { DataTable, type DataColumn } from "@/components/ui/DataTable";
+import { RowActions } from "@/components/ui/RowActions";
+import { Drawer } from "@/components/ui/Drawer";
+import { FormField } from "@/components/ui/FormField";
+import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 export default function SettingsPage() {
+  const toast = useToast();
   const settings = useAsync(() => api.get<AppSetting[]>("/content/settings"), []);
   const criteria = useAsync(
     () => api.get<RatingCriterion[]>("/ratings/criteria?includeInactive=true"),
     [],
   );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [critForm, setCritForm] = useState({
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set());
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [editing, setEditing] = useState<RatingCriterion | null>(null);
+  const [form, setForm] = useState({
     code: "",
     name: "",
     description: "",
@@ -24,7 +33,6 @@ export default function SettingsPage() {
     maxScore: "5",
     displayOrder: "0",
   });
-  const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   function settingValue(s: AppSetting) {
@@ -37,8 +45,7 @@ export default function SettingsPage() {
   }
 
   async function saveSetting(key: string) {
-    setBusy(true);
-    setMessage(null);
+    setBusyKeys((prev) => new Set(prev).add(key));
     try {
       const raw = drafts[key];
       let value: unknown = raw;
@@ -48,45 +55,145 @@ export default function SettingsPage() {
         value = raw;
       }
       await api.patch(`/content/settings/${key}`, { value });
-      setMessage(`Saved setting “${key}”`);
+      toast.success(`Saved setting “${key}”`);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       await settings.reload();
     } catch (err) {
-      setMessage(err instanceof ApiError ? err.message : "Failed to save setting");
+      toast.error(err instanceof ApiError ? err.message : "Failed to save setting");
+    } finally {
+      setBusyKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  function openCreate() {
+    setEditing(null);
+    setForm({
+      code: "",
+      name: "",
+      description: "",
+      minScore: "1",
+      maxScore: "5",
+      displayOrder: "0",
+    });
+    setDrawerOpen(true);
+  }
+
+  function openEdit(c: RatingCriterion) {
+    setEditing(c);
+    setForm({
+      code: c.code,
+      name: c.name,
+      description: c.description || "",
+      minScore: String(c.min_score ?? 1),
+      maxScore: String(c.max_score ?? 5),
+      displayOrder: String(c.display_order ?? 0),
+    });
+    setDrawerOpen(true);
+  }
+
+  async function saveCriterion(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.post("/ratings/criteria", {
+        id: editing?.id,
+        code: form.code.trim(),
+        name: form.name.trim(),
+        description: form.description.trim() || undefined,
+        minScore: Number(form.minScore) || 1,
+        maxScore: Number(form.maxScore) || 5,
+        displayOrder: Number(form.displayOrder) || 0,
+        isActive: editing?.is_active !== false,
+      });
+      toast.success(editing ? "Criterion updated" : "Criterion created");
+      setDrawerOpen(false);
+      await criteria.reload();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to save criterion");
     } finally {
       setBusy(false);
     }
   }
 
-  async function createCriterion(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setMessage(null);
+  async function toggleActive(c: RatingCriterion) {
     try {
       await api.post("/ratings/criteria", {
-        code: critForm.code.trim(),
-        name: critForm.name.trim(),
-        description: critForm.description.trim() || undefined,
-        minScore: Number(critForm.minScore) || 1,
-        maxScore: Number(critForm.maxScore) || 5,
-        displayOrder: Number(critForm.displayOrder) || 0,
-        isActive: true,
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        description: c.description || undefined,
+        minScore: c.min_score ?? 1,
+        maxScore: c.max_score ?? 5,
+        displayOrder: c.display_order ?? 0,
+        isActive: c.is_active === false,
       });
-      setCritForm({
-        code: "",
-        name: "",
-        description: "",
-        minScore: "1",
-        maxScore: "5",
-        displayOrder: "0",
-      });
-      setMessage("Rating criterion saved");
-      await criteria.reload();
+      criteria.setData((prev) =>
+        (prev || []).map((row) =>
+          row.id === c.id ? { ...row, is_active: c.is_active === false } : row,
+        ),
+      );
+      toast.success(c.is_active === false ? "Criterion activated" : "Criterion deactivated");
     } catch (err) {
-      setMessage(err instanceof ApiError ? err.message : "Failed to save criterion");
-    } finally {
-      setBusy(false);
+      toast.error(err instanceof ApiError ? err.message : "Failed to update criterion");
     }
   }
+
+  const columns: DataColumn<RatingCriterion>[] = [
+    {
+      key: "code",
+      header: "Code",
+      cell: (c) => <span className="font-mono text-sm">{c.code}</span>,
+    },
+    {
+      key: "name",
+      header: "Name",
+      cell: (c) => (
+        <div>
+          <div className="font-medium">{c.name}</div>
+          {c.description ? (
+            <div className="text-sm text-[var(--keepers-muted)]">{c.description}</div>
+          ) : null}
+        </div>
+      ),
+    },
+    {
+      key: "range",
+      header: "Range",
+      cell: (c) => (
+        <>
+          {c.min_score}–{c.max_score}
+        </>
+      ),
+    },
+    {
+      key: "active",
+      header: "Active",
+      cell: (c) => <StatusBadge status={c.is_active === false ? "draft" : "active"} />,
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (c) => (
+        <RowActions
+          actions={[
+            { label: "Edit", onClick: () => openEdit(c) },
+            {
+              label: c.is_active === false ? "Activate" : "Deactivate",
+              onClick: () => void toggleActive(c),
+            },
+          ]}
+        />
+      ),
+    },
+  ];
 
   return (
     <div>
@@ -95,15 +202,9 @@ export default function SettingsPage() {
         subtitle="Application settings and marshall rating criteria."
       />
 
-      {message ? (
-        <div className="mb-6">
-          <Alert>{message}</Alert>
-        </div>
-      ) : null}
-
       <section className="mb-12">
         <h2 className="font-display mb-4 text-2xl">App settings</h2>
-        {settings.loading ? <LoadingBlock /> : null}
+        {settings.loading ? <TableSkeleton rows={3} cols={1} /> : null}
         {settings.error ? <ErrorBlock message={settings.error} /> : null}
         {!settings.loading && !settings.error && (settings.data || []).length === 0 ? (
           <EmptyBlock
@@ -129,10 +230,10 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   className="btn btn-secondary mt-3"
-                  disabled={busy || drafts[s.key] === undefined}
-                  onClick={() => saveSetting(s.key)}
+                  disabled={busyKeys.has(s.key) || drafts[s.key] === undefined}
+                  onClick={() => void saveSetting(s.key)}
                 >
-                  Save
+                  {busyKeys.has(s.key) ? "Saving…" : "Save"}
                 </button>
               </article>
             ))}
@@ -141,112 +242,87 @@ export default function SettingsPage() {
       </section>
 
       <section>
-        <h2 className="font-display mb-4 text-2xl">Rating criteria</h2>
-
-        <form
-          onSubmit={createCriterion}
-          className="panel mb-6 grid gap-4 p-6 sm:grid-cols-2"
-        >
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Code
-            </span>
-            <input
-              className="admin-input"
-              required
-              value={critForm.code}
-              onChange={(e) => setCritForm({ ...critForm, code: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Name
-            </span>
-            <input
-              className="admin-input"
-              required
-              value={critForm.name}
-              onChange={(e) => setCritForm({ ...critForm, name: e.target.value })}
-            />
-          </label>
-          <label className="block sm:col-span-2">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Description
-            </span>
-            <input
-              className="admin-input"
-              value={critForm.description}
-              onChange={(e) => setCritForm({ ...critForm, description: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Min score
-            </span>
-            <input
-              className="admin-input"
-              type="number"
-              value={critForm.minScore}
-              onChange={(e) => setCritForm({ ...critForm, minScore: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Max score
-            </span>
-            <input
-              className="admin-input"
-              type="number"
-              value={critForm.maxScore}
-              onChange={(e) => setCritForm({ ...critForm, maxScore: e.target.value })}
-            />
-          </label>
-          <div className="sm:col-span-2">
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              Add criterion
-            </button>
-          </div>
-        </form>
-
-        {criteria.loading ? <LoadingBlock /> : null}
-        {criteria.error ? <ErrorBlock message={criteria.error} /> : null}
-        {!criteria.loading && !criteria.error && (criteria.data || []).length === 0 ? (
-          <EmptyBlock title="No criteria" description="Add scoring dimensions above." />
-        ) : null}
-        {!criteria.loading && !criteria.error && (criteria.data || []).length > 0 ? (
-          <div className="panel overflow-x-auto">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Code</th>
-                  <th>Name</th>
-                  <th>Range</th>
-                  <th>Active</th>
-                </tr>
-              </thead>
-              <tbody>
-                {criteria.data!.map((c) => (
-                  <tr key={c.id}>
-                    <td className="font-mono text-sm">{c.code}</td>
-                    <td>
-                      <div className="font-medium">{c.name}</div>
-                      {c.description ? (
-                        <div className="text-sm text-[var(--keepers-muted)]">{c.description}</div>
-                      ) : null}
-                    </td>
-                    <td>
-                      {c.min_score}–{c.max_score}
-                    </td>
-                    <td>
-                      <StatusBadge status={c.is_active === false ? "draft" : "active"} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <h2 className="font-display m-0 text-2xl">Rating criteria</h2>
+          <button type="button" className="btn btn-primary" onClick={openCreate}>
+            Add criterion
+          </button>
+        </div>
+        <DataTable
+          columns={columns}
+          rows={criteria.data || []}
+          loading={criteria.loading}
+          refreshing={criteria.refreshing}
+          error={criteria.error}
+          emptyTitle="No criteria"
+          emptyDescription="Add scoring dimensions to get started."
+          onRowClick={openEdit}
+        />
       </section>
+
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        title={editing ? "Edit criterion" : "Add criterion"}
+        footer={
+          <>
+            <button type="submit" form="criterion-form" className="btn btn-primary" disabled={busy}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy}
+              onClick={() => setDrawerOpen(false)}
+            >
+              Cancel
+            </button>
+          </>
+        }
+      >
+        <form id="criterion-form" onSubmit={saveCriterion} className="grid gap-4 sm:grid-cols-2">
+          <FormField label="Code">
+            <input
+              className="admin-input"
+              required
+              disabled={Boolean(editing)}
+              value={form.code}
+              onChange={(e) => setForm({ ...form, code: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Name">
+            <input
+              className="admin-input"
+              required
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Description" className="sm:col-span-2">
+            <input
+              className="admin-input"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Min score">
+            <input
+              className="admin-input"
+              type="number"
+              value={form.minScore}
+              onChange={(e) => setForm({ ...form, minScore: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Max score">
+            <input
+              className="admin-input"
+              type="number"
+              value={form.maxScore}
+              onChange={(e) => setForm({ ...form, maxScore: e.target.value })}
+            />
+          </FormField>
+        </form>
+      </Drawer>
     </div>
   );
 }

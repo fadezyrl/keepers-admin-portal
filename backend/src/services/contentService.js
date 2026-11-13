@@ -75,6 +75,30 @@ async function upsertSponsor(payload, actor, req) {
   return inserted.rows[0];
 }
 
+async function reorderSponsors(orderedIds, actor, req) {
+  if (!hasPermission(actor, 'sponsors.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage sponsors');
+  }
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'orderedIds required');
+  }
+  for (let i = 0; i < orderedIds.length; i += 1) {
+    await query(
+      `UPDATE sponsors SET display_order = $1, updated_by = $2 WHERE id = $3 AND deleted_at IS NULL`,
+      [i, actor.id, orderedIds[i]],
+    );
+  }
+  await writeAudit({
+    actorId: actor.id,
+    action: 'sponsors.reorder',
+    entityType: 'sponsors',
+    entityId: null,
+    metadata: { count: orderedIds.length },
+    req,
+  });
+  return listSponsors({ activeOnly: false });
+}
+
 async function deleteSponsor(id, actor, req) {
   if (!hasPermission(actor, 'sponsors.manage')) {
     throw new AppError(403, 'FORBIDDEN', 'Cannot manage sponsors');
@@ -93,9 +117,12 @@ async function deleteSponsor(id, actor, req) {
   return { id, deleted: true };
 }
 
-async function listHeroSlides() {
+async function listHeroSlides({ activeOnly = true } = {}) {
   const res = await query(
-    `SELECT * FROM hero_slides WHERE is_active = TRUE ORDER BY display_order, created_at`,
+    `SELECT * FROM hero_slides
+     WHERE ($1::boolean = FALSE OR is_active = TRUE)
+     ORDER BY display_order, created_at`,
+    [activeOnly],
   );
   return res.rows.map((s) => ({
     id: s.id,
@@ -103,20 +130,191 @@ async function listHeroSlides() {
     subtitle: s.subtitle,
     image: s.image_url,
     tripId: s.trip_id,
+    displayOrder: s.display_order,
+    isActive: s.is_active,
+    updatedAt: s.updated_at,
   }));
 }
 
-async function listGallery() {
+async function upsertHeroSlide(payload, actor, req) {
+  if (!hasPermission(actor, 'media.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage carousel');
+  }
+  if (!payload.image && !payload.imageUrl) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Image URL is required');
+  }
+  const imageUrl = payload.image || payload.imageUrl;
+  if (payload.id) {
+    const updated = await query(
+      `UPDATE hero_slides SET
+        title = COALESCE($1, title),
+        subtitle = COALESCE($2, subtitle),
+        image_url = COALESCE($3, image_url),
+        trip_id = COALESCE($4, trip_id),
+        display_order = COALESCE($5, display_order),
+        is_active = COALESCE($6, is_active)
+       WHERE id = $7
+       RETURNING *`,
+      [
+        payload.title ?? null,
+        payload.subtitle ?? null,
+        imageUrl ?? null,
+        payload.tripId || null,
+        payload.displayOrder ?? null,
+        payload.isActive ?? null,
+        payload.id,
+      ],
+    );
+    if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Slide not found');
+    await writeAudit({
+      actorId: actor.id,
+      action: 'hero_slides.update',
+      entityType: 'hero_slides',
+      entityId: payload.id,
+      req,
+    });
+    return updated.rows[0];
+  }
+
+  const inserted = await query(
+    `INSERT INTO hero_slides (title, subtitle, image_url, trip_id, display_order, is_active, created_by)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, TRUE), $7)
+     RETURNING *`,
+    [
+      payload.title || null,
+      payload.subtitle || null,
+      imageUrl,
+      payload.tripId || null,
+      payload.displayOrder || 0,
+      payload.isActive,
+      actor.id,
+    ],
+  );
+  await writeAudit({
+    actorId: actor.id,
+    action: 'hero_slides.create',
+    entityType: 'hero_slides',
+    entityId: inserted.rows[0].id,
+    req,
+  });
+  return inserted.rows[0];
+}
+
+async function deleteHeroSlide(id, actor, req) {
+  if (!hasPermission(actor, 'media.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage carousel');
+  }
+  const updated = await query(
+    `UPDATE hero_slides SET is_active = FALSE WHERE id = $1 RETURNING id`,
+    [id],
+  );
+  if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Slide not found');
+  await writeAudit({
+    actorId: actor.id,
+    action: 'hero_slides.deactivate',
+    entityType: 'hero_slides',
+    entityId: id,
+    req,
+  });
+  return { id, deleted: true };
+}
+
+async function listGallery({ activeOnly = true } = {}) {
   const res = await query(
-    `SELECT * FROM gallery_items WHERE is_active = TRUE AND deleted_at IS NULL
+    `SELECT * FROM gallery_items
+     WHERE deleted_at IS NULL AND ($1::boolean = FALSE OR is_active = TRUE)
      ORDER BY display_order, created_at DESC`,
+    [activeOnly],
   );
   return res.rows.map((g) => ({
     id: g.id,
     image: g.image_url,
     caption: g.caption,
     tripId: g.trip_id,
+    displayOrder: g.display_order,
+    isActive: g.is_active,
+    createdAt: g.created_at,
   }));
+}
+
+async function upsertGalleryItem(payload, actor, req) {
+  if (!hasPermission(actor, 'media.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage gallery');
+  }
+  if (!payload.image && !payload.imageUrl) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Image URL is required');
+  }
+  const imageUrl = payload.image || payload.imageUrl;
+  if (payload.id) {
+    const updated = await query(
+      `UPDATE gallery_items SET
+        image_url = COALESCE($1, image_url),
+        caption = COALESCE($2, caption),
+        trip_id = COALESCE($3, trip_id),
+        display_order = COALESCE($4, display_order),
+        is_active = COALESCE($5, is_active)
+       WHERE id = $6 AND deleted_at IS NULL
+       RETURNING *`,
+      [
+        imageUrl ?? null,
+        payload.caption ?? null,
+        payload.tripId || null,
+        payload.displayOrder ?? null,
+        payload.isActive ?? null,
+        payload.id,
+      ],
+    );
+    if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Gallery item not found');
+    await writeAudit({
+      actorId: actor.id,
+      action: 'gallery_items.update',
+      entityType: 'gallery_items',
+      entityId: payload.id,
+      req,
+    });
+    return updated.rows[0];
+  }
+
+  const inserted = await query(
+    `INSERT INTO gallery_items (image_url, caption, trip_id, display_order, is_active, created_by)
+     VALUES ($1, $2, $3, $4, COALESCE($5, TRUE), $6)
+     RETURNING *`,
+    [
+      imageUrl,
+      payload.caption || null,
+      payload.tripId || null,
+      payload.displayOrder || 0,
+      payload.isActive,
+      actor.id,
+    ],
+  );
+  await writeAudit({
+    actorId: actor.id,
+    action: 'gallery_items.create',
+    entityType: 'gallery_items',
+    entityId: inserted.rows[0].id,
+    req,
+  });
+  return inserted.rows[0];
+}
+
+async function deleteGalleryItem(id, actor, req) {
+  if (!hasPermission(actor, 'media.manage')) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot manage gallery');
+  }
+  const updated = await query(
+    `UPDATE gallery_items SET deleted_at = NOW(), is_active = FALSE WHERE id = $1 RETURNING id`,
+    [id],
+  );
+  if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Gallery item not found');
+  await writeAudit({
+    actorId: actor.id,
+    action: 'gallery_items.delete',
+    entityType: 'gallery_items',
+    entityId: id,
+    req,
+  });
+  return { id, deleted: true };
 }
 
 async function listDocuments() {
@@ -369,6 +567,59 @@ async function getHomeFeed(userId) {
   };
 }
 
+/**
+ * Lightweight module-level change markers for client stale-while-revalidate.
+ * Returns ISO timestamps (or null) so the app can refresh only changed modules.
+ */
+async function getContentVersions(userId) {
+  const res = await query(
+    `
+    SELECT
+      (SELECT MAX(updated_at)::text FROM hero_slides) AS hero_slides,
+      (SELECT MAX(updated_at)::text FROM sponsors WHERE deleted_at IS NULL) AS sponsors,
+      (SELECT MAX(COALESCE(deleted_at, created_at))::text FROM gallery_items) AS gallery,
+      (SELECT MAX(updated_at)::text FROM trips WHERE deleted_at IS NULL) AS trips,
+      (SELECT MAX(updated_at)::text FROM trip_registrations) AS registrations,
+      (SELECT MAX(updated_at)::text FROM trip_attendance) AS attendance,
+      (SELECT MAX(updated_at)::text FROM documents) AS documents,
+      (SELECT MAX(updated_at)::text FROM announcements WHERE deleted_at IS NULL) AS announcements,
+      (SELECT MAX(updated_at)::text FROM events WHERE deleted_at IS NULL) AS events,
+      (SELECT MAX(updated_at)::text FROM membership_levels) AS membership_levels,
+      (SELECT MAX(updated_at)::text FROM member_profiles) AS members,
+      (SELECT MAX(updated_at)::text FROM vehicles) AS vehicles,
+      (SELECT MAX(GREATEST(created_at, COALESCE(read_at, created_at)))::text
+         FROM notifications WHERE user_id = $1) AS notifications,
+      (SELECT MAX(updated_at)::text FROM membership_upgrade_requests) AS upgrades,
+      (SELECT MAX(updated_at)::text FROM rating_criteria) AS rating_criteria,
+      (SELECT MAX(updated_at)::text FROM trip_ratings) AS ratings,
+      (SELECT MAX(created_at)::text FROM trip_media WHERE deleted_at IS NULL) AS trip_media
+    `,
+    [userId],
+  );
+
+  const row = res.rows[0] || {};
+  return {
+    heroSlides: row.hero_slides || null,
+    sponsors: row.sponsors || null,
+    gallery: row.gallery || null,
+    trips: row.trips || null,
+    registrations: row.registrations || null,
+    attendance: row.attendance || null,
+    documents: row.documents || null,
+    announcements: row.announcements || null,
+    events: row.events || null,
+    membershipLevels: row.membership_levels || null,
+    members: row.members || null,
+    vehicles: row.vehicles || null,
+    notifications: row.notifications || null,
+    upgrades: row.upgrades || null,
+    ratingCriteria: row.rating_criteria || null,
+    ratings: row.ratings || null,
+    tripMedia: row.trip_media || null,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 async function listSettings() {
   const res = await query(`SELECT key, value, description, updated_at FROM app_settings ORDER BY key`);
   return res.rows;
@@ -397,9 +648,14 @@ async function updateSetting(key, value, actor, req) {
 module.exports = {
   listSponsors,
   upsertSponsor,
+  reorderSponsors,
   deleteSponsor,
   listHeroSlides,
+  upsertHeroSlide,
+  deleteHeroSlide,
   listGallery,
+  upsertGalleryItem,
+  deleteGalleryItem,
   listDocuments,
   getDocumentBySlug,
   updateDocument,
@@ -411,6 +667,7 @@ module.exports = {
   markAllNotificationsRead,
   uploadFile,
   getHomeFeed,
+  getContentVersions,
   listSettings,
   updateSetting,
 };

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
@@ -22,6 +22,9 @@ function TripDetailInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState("");
+  const [coverImage, setCoverImage] = useState("");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaType, setMediaType] = useState<"image" | "video">("image");
 
   async function setStatus(status: string) {
     setBusy(true);
@@ -64,6 +67,7 @@ function TripDetailInner() {
         destination: String(fd.get("destination") || data.destination),
         meetingPoint: String(fd.get("meetingPoint") || ""),
         instructions: String(fd.get("instructions") || ""),
+        coverImage: coverImage.trim() || String(fd.get("coverImage") || data.coverImage || "") || undefined,
       });
       setMessage("Trip updated");
       await reload();
@@ -73,6 +77,32 @@ function TripDetailInner() {
       setBusy(false);
     }
   }
+
+  async function attachMedia(e: FormEvent) {
+    e.preventDefault();
+    if (!mediaUrl.trim()) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.post(`/trips/${id}/media`, {
+        url: mediaUrl.trim(),
+        mediaType,
+      });
+      setMediaUrl("");
+      setMessage(mediaType === "video" ? "Video attached" : "Image attached");
+      await reload();
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "Failed to attach media");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (data?.coverImage) {
+      setCoverImage(data.coverImage);
+    }
+  }, [data?.coverImage]);
 
   if (loading) return <LoadingBlock />;
   if (error) return <ErrorBlock message={error} />;
@@ -155,9 +185,64 @@ function TripDetailInner() {
                 defaultValue={data.instructions || ""}
               />
             </label>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Cover image URL
+              </span>
+              <input
+                className="admin-input"
+                name="coverImage"
+                value={coverImage}
+                onChange={(e) => setCoverImage(e.target.value)}
+                placeholder="Upload via Media, then paste URL"
+              />
+            </label>
             <button type="submit" className="btn btn-secondary" disabled={busy}>
               Save changes
             </button>
+          </form>
+
+          <form onSubmit={attachMedia} className="mt-8 border-t border-[var(--keepers-line)] pt-6 space-y-4">
+            <h3 className="font-display m-0 text-xl">Trip media</h3>
+            <p className="m-0 text-sm text-[var(--keepers-muted)]">
+              Attach highlight images or videos (mp4/mov/webm). Upload in Media first if needed.
+            </p>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Media URL
+              </span>
+              <input
+                className="admin-input"
+                value={mediaUrl}
+                onChange={(e) => setMediaUrl(e.target.value)}
+                placeholder="https://..."
+              />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Type
+              </span>
+              <select
+                className="admin-input"
+                value={mediaType}
+                onChange={(e) => setMediaType(e.target.value as "image" | "video")}
+              >
+                <option value="image">Image</option>
+                <option value="video">Video</option>
+              </select>
+            </label>
+            <button type="submit" className="btn btn-secondary" disabled={busy || !mediaUrl.trim()}>
+              Attach media
+            </button>
+            {(data.media || []).length > 0 ? (
+              <ul className="m-0 list-none space-y-2 p-0">
+                {(data.media || []).map((m: { id?: string; media_type?: string; public_url?: string }) => (
+                  <li key={m.id || m.public_url} className="text-sm text-[var(--keepers-muted)]">
+                    {(m.media_type || "image").toUpperCase()} · {m.public_url}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </form>
 
           <div className="mt-8 border-t border-[var(--keepers-line)] pt-6">

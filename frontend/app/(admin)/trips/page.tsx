@@ -1,257 +1,238 @@
 "use client";
 
-import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { api, ApiError, buildQuery } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { useToast } from "@/lib/toast";
 import type { Paginated, Trip } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Alert } from "@/components/ui/Alert";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { DataTable, type DataColumn } from "@/components/ui/DataTable";
+import { FilterBar, SearchInput } from "@/components/ui/FilterBar";
+import { RowActions } from "@/components/ui/RowActions";
+import { TripCreateDrawer, TripQuickDrawer } from "@/components/admin/TripDrawer";
 
-const emptyForm = {
-  title: "",
-  destination: "",
-  date: "",
-  time: "",
-  description: "",
-  meetingPoint: "",
-  difficulty: "Moderate",
-  maxParticipants: "20",
-  publish: false,
-};
+const PAGE_SIZE = 20;
 
 export default function TripsPage() {
+  const toast = useToast();
   const [q, setQ] = useState("");
-  const [query, setQuery] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
+  const debouncedQ = useDebouncedValue(q, 300);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
 
   const path = useMemo(
     () =>
       `/trips${buildQuery({
-        q: query || undefined,
+        q: debouncedQ.trim() || undefined,
+        status: status || undefined,
         includeDrafts: true,
         filter: "all",
-        limit: 100,
+        page,
+        limit: PAGE_SIZE,
       })}`,
-    [query],
+    [debouncedQ, status, page],
   );
 
-  const { data, error, loading, reload } = useAsync(
+  const { data, error, loading, refreshing, setData } = useAsync(
     () => api.get<Paginated<Trip>>(path),
     [path],
   );
 
-  async function createTrip(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setFormError(null);
+  const items = data?.items || [];
+
+  function patchTrip(updated: Trip) {
+    setData((prev) => {
+      if (!prev) return prev;
+      const exists = prev.items.some((t) => t.id === updated.id);
+      return {
+        ...prev,
+        items: exists
+          ? prev.items.map((t) => (t.id === updated.id ? { ...t, ...updated } : t))
+          : [updated, ...prev.items],
+      };
+    });
+  }
+
+  async function setTripStatus(id: string, nextStatus: string) {
+    setBusyIds((prev) => new Set(prev).add(id));
     try {
-      const created = await api.post<Trip>("/trips", {
-        title: form.title.trim(),
-        destination: form.destination.trim(),
-        date: form.date,
-        time: form.time || undefined,
-        description: form.description || undefined,
-        meetingPoint: form.meetingPoint || undefined,
-        difficulty: form.difficulty,
-        maxParticipants: Number(form.maxParticipants) || 20,
-        publish: form.publish,
+      await api.post(`/trips/${id}/status`, { status: nextStatus });
+      setData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((t) =>
+            t.id === id ? { ...t, status: nextStatus, publishStatus: nextStatus } : t,
+          ),
+        };
       });
-      setForm(emptyForm);
-      setShowCreate(false);
-      await reload();
-      window.location.href = `/trips/${created.id}`;
+      toast.success(`Trip marked ${nextStatus}`);
     } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : "Failed to create trip");
+      toast.error(err instanceof ApiError ? err.message : "Failed to update trip");
     } finally {
-      setBusy(false);
+      setBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   }
+
+  const columns: DataColumn<Trip>[] = [
+    {
+      key: "trip",
+      header: "Trip",
+      cell: (t) => (
+        <div className="flex items-center gap-3">
+          {t.coverImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={t.coverImage} alt="" className="thumb" />
+          ) : null}
+          <div>
+            <div className="font-medium">{t.title}</div>
+            <div className="text-sm text-[var(--keepers-muted)]">{t.destination}</div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (t) => (
+        <>
+          {formatDate(t.date)}
+          {t.time ? ` · ${String(t.time).slice(0, 5)}` : ""}
+        </>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (t) => <StatusBadge status={t.publishStatus || t.status} />,
+    },
+    {
+      key: "capacity",
+      header: "Capacity",
+      cell: (t) => (
+        <>
+          {t.registeredCount ?? 0}
+          {t.maxParticipants ? ` / ${t.maxParticipants}` : ""}
+        </>
+      ),
+    },
+    {
+      key: "difficulty",
+      header: "Difficulty",
+      cell: (t) => t.difficulty || "—",
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (t) => {
+        const s = t.publishStatus || t.status;
+        return (
+          <RowActions
+            actions={[
+              { label: "Open", onClick: () => setDrawerId(t.id) },
+              {
+                label: "Publish",
+                onClick: () => void setTripStatus(t.id, "published"),
+                hidden: s === "published",
+              },
+              {
+                label: "Unpublish",
+                onClick: () => void setTripStatus(t.id, "draft"),
+                hidden: s !== "published",
+              },
+              {
+                label: "Cancel",
+                onClick: () => void setTripStatus(t.id, "cancelled"),
+                tone: "danger",
+                hidden: s === "cancelled",
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <div>
       <PageHeader
         title="Trips"
-        subtitle="Draft, publish, and manage Keepers adventures."
+        subtitle="Draft, publish, and manage Keepers adventures from the list."
         actions={
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => setShowCreate((v) => !v)}
-          >
-            {showCreate ? "Close form" : "New trip"}
+          <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
+            New trip
           </button>
         }
       />
 
-      {showCreate ? (
-        <form onSubmit={createTrip} className="panel mb-8 grid gap-4 p-6 sm:grid-cols-2">
-          <label className="block sm:col-span-2">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Title
-            </span>
-            <input
-              className="admin-input"
-              required
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
+      <DataTable
+        columns={columns}
+        rows={items}
+        loading={loading}
+        refreshing={refreshing}
+        error={error}
+        emptyTitle="No trips"
+        emptyDescription="Create the first adventure to get started."
+        onRowClick={(t) => setDrawerId(t.id)}
+        busyIds={busyIds}
+        page={page}
+        limit={PAGE_SIZE}
+        total={data?.pagination?.total}
+        onPageChange={setPage}
+        toolbar={
+          <FilterBar>
+            <SearchInput
+              value={q}
+              onChange={(value) => {
+                setQ(value);
+                setPage(1);
+              }}
+              placeholder="Search trips…"
+              className="max-w-sm min-w-[14rem] flex-1"
             />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Destination
-            </span>
-            <input
-              className="admin-input"
-              required
-              value={form.destination}
-              onChange={(e) => setForm({ ...form, destination: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Date
-            </span>
-            <input
-              className="admin-input"
-              type="date"
-              required
-              value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Time
-            </span>
-            <input
-              className="admin-input"
-              type="time"
-              value={form.time}
-              onChange={(e) => setForm({ ...form, time: e.target.value })}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Difficulty
-            </span>
             <select
-              className="admin-select"
-              value={form.difficulty}
-              onChange={(e) => setForm({ ...form, difficulty: e.target.value })}
+              className="admin-select max-w-[180px]"
+              value={status}
+              onChange={(e) => {
+                setStatus(e.target.value);
+                setPage(1);
+              }}
             >
-              <option>Easy</option>
-              <option>Moderate</option>
-              <option>Advanced</option>
-              <option>Expert</option>
+              <option value="">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="published">Published</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
             </select>
-          </label>
-          <label className="block sm:col-span-2">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Meeting point
-            </span>
-            <input
-              className="admin-input"
-              value={form.meetingPoint}
-              onChange={(e) => setForm({ ...form, meetingPoint: e.target.value })}
-            />
-          </label>
-          <label className="block sm:col-span-2">
-            <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-              Description
-            </span>
-            <textarea
-              className="admin-textarea"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </label>
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
-            <input
-              type="checkbox"
-              checked={form.publish}
-              onChange={(e) => setForm({ ...form, publish: e.target.checked })}
-            />
-            Publish immediately
-          </label>
-          {formError ? <div className="sm:col-span-2"><Alert tone="danger">{formError}</Alert></div> : null}
-          <div className="sm:col-span-2">
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? "Creating…" : "Create trip"}
-            </button>
-          </div>
-        </form>
-      ) : null}
+          </FilterBar>
+        }
+      />
 
-      <form
-        className="mb-6 flex flex-wrap gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setQuery(q.trim());
+      <TripCreateDrawer
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(trip) => {
+          patchTrip(trip);
+          setDrawerId(trip.id);
         }}
-      >
-        <input
-          className="admin-input max-w-sm"
-          placeholder="Search trips…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <button type="submit" className="btn btn-secondary">
-          Search
-        </button>
-      </form>
+      />
 
-      {loading ? <LoadingBlock /> : null}
-      {error ? <ErrorBlock message={error} /> : null}
-      {!loading && !error && data && data.items.length === 0 ? (
-        <EmptyBlock title="No trips" description="Create the first adventure above." />
-      ) : null}
-
-      {!loading && !error && data && data.items.length > 0 ? (
-        <div className="panel overflow-x-auto">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Trip</th>
-                <th>Date</th>
-                <th>Status</th>
-                <th>Registrations</th>
-                <th>Difficulty</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    <Link href={`/trips/${t.id}`} className="font-medium hover:underline">
-                      {t.title}
-                    </Link>
-                    <div className="text-sm text-[var(--keepers-muted)]">{t.destination}</div>
-                  </td>
-                  <td>
-                    {formatDate(t.date)}
-                    {t.time ? ` · ${String(t.time).slice(0, 5)}` : ""}
-                  </td>
-                  <td>
-                    <StatusBadge status={t.publishStatus || t.status} />
-                  </td>
-                  <td>
-                    {t.registeredCount ?? 0}
-                    {t.maxParticipants ? ` / ${t.maxParticipants}` : ""}
-                  </td>
-                  <td>{t.difficulty || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+      <TripQuickDrawer
+        tripId={drawerId}
+        open={Boolean(drawerId)}
+        onClose={() => setDrawerId(null)}
+        onUpdated={patchTrip}
+      />
     </div>
   );
 }

@@ -1,21 +1,32 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
 import type { DashboardStats } from "@/lib/types";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
+import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TableSkeleton } from "@/components/ui/Skeleton";
+import { TripQuickDrawer } from "@/components/admin/TripDrawer";
 
 export default function DashboardPage() {
   const { data, error, loading } = useAsync(
     () => api.get<DashboardStats>("/dashboard/stats"),
     [],
   );
+  const [tripId, setTripId] = useState<string | null>(null);
 
-  if (loading) return <LoadingBlock />;
+  if (loading) {
+    return (
+      <div>
+        <PageHeader title="Dashboard" subtitle="Loading club pulse…" />
+        <TableSkeleton rows={2} cols={4} />
+      </div>
+    );
+  }
   if (error) return <ErrorBlock message={error} />;
   if (!data) return <EmptyBlock title="No dashboard data" />;
 
@@ -34,7 +45,7 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title="Dashboard"
-        subtitle="Live club pulse from the Keepers API — counts reflect current membership and trips."
+        subtitle="Live club pulse from the Keepers API — open queues and trips without extra navigation."
       />
 
       <div className="grid gap-px bg-[var(--keepers-line)] sm:grid-cols-2 lg:grid-cols-4">
@@ -66,9 +77,10 @@ export default function DashboardPage() {
             <ul className="m-0 list-none divide-y divide-[var(--keepers-line)] p-0">
               {data.upcomingCalendar.map((t) => (
                 <li key={t.id}>
-                  <Link
-                    href={`/trips/${t.id}`}
-                    className="flex items-center justify-between gap-4 px-5 py-4 hover:bg-[var(--keepers-cream)]/60"
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[var(--keepers-cream)]/60"
+                    onClick={() => setTripId(t.id)}
                   >
                     <div>
                       <p className="m-0 font-medium">{t.title}</p>
@@ -78,7 +90,7 @@ export default function DashboardPage() {
                       </p>
                     </div>
                     <StatusBadge status={t.status} />
-                  </Link>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -111,6 +123,12 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
+
+      <TripQuickDrawer
+        tripId={tripId}
+        open={Boolean(tripId)}
+        onClose={() => setTripId(null)}
+      />
     </div>
   );
 }

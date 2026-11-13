@@ -357,14 +357,50 @@ async function setMemberStatus(memberId, { status, reason }, actor, req) {
   return getMemberById(memberId, actor);
 }
 
+const ASSIGNABLE_BY_ROLES_ASSIGN = new Set([
+  'member',
+  'pre_marshall',
+  'marshall',
+]);
+
+function assertCanManageRole(actor, roleCode, action) {
+  if (!hasPermission(actor, 'roles.assign') && !hasPermission(actor, 'admins.manage')) {
+    throw new AppError(403, 'FORBIDDEN', `Cannot ${action} roles`);
+  }
+  if (roleCode === 'super_admin') {
+    if (!(actor.roles || []).includes('super_admin')) {
+      throw new AppError(403, 'FORBIDDEN', 'Only super admins can manage super_admin');
+    }
+    return;
+  }
+  if (roleCode === 'admin') {
+    if (!hasPermission(actor, 'admins.manage') && !(actor.roles || []).includes('super_admin')) {
+      throw new AppError(403, 'FORBIDDEN', 'Cannot manage admin role');
+    }
+    return;
+  }
+  if (!ASSIGNABLE_BY_ROLES_ASSIGN.has(roleCode)) {
+    throw new AppError(400, 'INVALID_ROLE', 'Unknown or unsupported role');
+  }
+  if (!hasPermission(actor, 'roles.assign')) {
+    throw new AppError(403, 'FORBIDDEN', `Cannot ${action} this role`);
+  }
+}
+
 async function assignRole(memberId, roleCode, actor, req) {
   const role = await query(`SELECT * FROM roles WHERE code = $1`, [roleCode]);
   if (!role.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Role not found');
 
-  if (['admin', 'super_admin'].includes(roleCode) && !hasPermission(actor, 'admins.manage')) {
-    if (!hasPermission(actor, 'roles.assign') || roleCode === 'super_admin') {
-      throw new AppError(403, 'FORBIDDEN', 'Cannot assign this role');
-    }
+  assertCanManageRole(actor, roleCode, 'assign');
+
+  // Prevent self-escalation to admin without admins.manage
+  if (
+    memberId === actor.id &&
+    ['admin', 'super_admin'].includes(roleCode) &&
+    !hasPermission(actor, 'admins.manage') &&
+    !(actor.roles || []).includes('super_admin')
+  ) {
+    throw new AppError(403, 'FORBIDDEN', 'Cannot escalate your own privileges');
   }
 
   await query(
@@ -389,6 +425,20 @@ async function assignRole(memberId, roleCode, actor, req) {
 async function removeRole(memberId, roleCode, actor, req) {
   const role = await query(`SELECT * FROM roles WHERE code = $1`, [roleCode]);
   if (!role.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Role not found');
+
+  assertCanManageRole(actor, roleCode, 'remove');
+
+  if (roleCode === 'admin' || roleCode === 'super_admin') {
+    const admins = await query(
+      `SELECT COUNT(*)::int AS n
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE r.code IN ('admin', 'super_admin')`,
+    );
+    if (admins.rows[0].n <= 1) {
+      throw new AppError(409, 'LAST_ADMIN', 'Cannot remove the last admin role');
+    }
+  }
 
   await query(`DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2`, [
     memberId,

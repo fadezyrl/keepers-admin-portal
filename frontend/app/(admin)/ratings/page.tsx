@@ -3,156 +3,349 @@
 import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
+import { useToast } from "@/lib/toast";
 import type { RatingRow, UpgradeRequest } from "@/lib/types";
 import { displayName, formatDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Alert } from "@/components/ui/Alert";
-import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { DataTable, type DataColumn } from "@/components/ui/DataTable";
+import { RowActions } from "@/components/ui/RowActions";
+import { Drawer } from "@/components/ui/Drawer";
+import { FormField } from "@/components/ui/FormField";
+import { MemberDrawer } from "@/components/admin/MemberDrawer";
+import { TripQuickDrawer } from "@/components/admin/TripDrawer";
 
 export default function RatingsPage() {
+  const toast = useToast();
   const ratings = useAsync(() => api.get<RatingRow[]>("/ratings"), []);
   const upgrades = useAsync(
     () => api.get<UpgradeRequest[]>("/ratings/upgrades?status=pending"),
     [],
   );
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [message, setMessage] = useState<string | null>(null);
+  const [activeUpgrade, setActiveUpgrade] = useState<UpgradeRequest | null>(null);
+  const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [memberId, setMemberId] = useState<string | null>(null);
+  const [tripId, setTripId] = useState<string | null>(null);
+  const [ratingDetail, setRatingDetail] = useState<RatingRow | null>(null);
 
-  async function review(id: string, decision: "approved" | "rejected") {
+  async function review(id: string, decision: "approved" | "rejected", decisionNotes?: string) {
+    setBusyIds((prev) => new Set(prev).add(id));
     setBusy(true);
-    setMessage(null);
     try {
       await api.post(`/ratings/upgrades/${id}/review`, {
         decision,
-        decisionNotes: notes[id] || undefined,
+        decisionNotes: decisionNotes || undefined,
       });
-      setMessage(`Upgrade request ${decision}`);
-      await upgrades.reload();
+      upgrades.setData((prev) => (prev || []).filter((u) => u.id !== id));
+      if (activeUpgrade?.id === id) setActiveUpgrade(null);
+      toast.success(`Upgrade request ${decision}`);
     } catch (err) {
-      setMessage(err instanceof ApiError ? err.message : "Review failed");
+      toast.error(err instanceof ApiError ? err.message : "Review failed");
     } finally {
       setBusy(false);
+      setBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   }
+
+  const upgradeColumns: DataColumn<UpgradeRequest>[] = [
+    {
+      key: "member",
+      header: "Member",
+      cell: (u) => (
+        <div>
+          <div className="font-medium">
+            {displayName(u.member_first_name, u.member_last_name)}
+          </div>
+          <div className="text-sm text-[var(--keepers-muted)]">@{u.member_username || "—"}</div>
+        </div>
+      ),
+    },
+    {
+      key: "path",
+      header: "Upgrade",
+      cell: (u) => (
+        <span>
+          {u.from_level_name || "—"} → {u.to_level_name}
+        </span>
+      ),
+    },
+    {
+      key: "trip",
+      header: "Trip",
+      cell: (u) => u.trip_title || "—",
+    },
+    {
+      key: "when",
+      header: "Requested",
+      cell: (u) => formatDateTime(u.created_at),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (u) => <StatusBadge status={u.status} />,
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (u) => (
+        <RowActions
+          actions={[
+            {
+              label: "Review",
+              onClick: () => {
+                setNotes(u.recommendation_notes || "");
+                setActiveUpgrade(u);
+              },
+            },
+            {
+              label: "Approve",
+              onClick: () => void review(u.id, "approved"),
+            },
+            {
+              label: "Reject",
+              onClick: () => void review(u.id, "rejected"),
+              tone: "danger",
+            },
+          ]}
+        />
+      ),
+    },
+  ];
+
+  const ratingColumns: DataColumn<RatingRow>[] = [
+    {
+      key: "member",
+      header: "Member",
+      cell: (r) => displayName(r.member_first_name, r.member_last_name),
+    },
+    {
+      key: "trip",
+      header: "Trip",
+      cell: (r) => r.trip_title || r.trip_id,
+    },
+    {
+      key: "score",
+      header: "Overall",
+      cell: (r) => Number(r.overall_score).toFixed(1),
+    },
+    {
+      key: "rater",
+      header: "Rated by",
+      cell: (r) => displayName(r.rater_first_name, r.rater_last_name),
+    },
+    {
+      key: "when",
+      header: "When",
+      cell: (r) => formatDateTime(r.created_at),
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (r) => (
+        <RowActions
+          actions={[
+            { label: "Details", onClick: () => setRatingDetail(r) },
+            {
+              label: "Member",
+              onClick: () => setMemberId(r.member_id),
+            },
+            {
+              label: "Trip",
+              onClick: () => setTripId(r.trip_id),
+            },
+          ]}
+        />
+      ),
+    },
+  ];
 
   return (
     <div>
       <PageHeader
         title="Ratings"
-        subtitle="Trip ratings and pending membership upgrade recommendations."
+        subtitle="Review upgrade recommendations and recent trip ratings."
       />
-
-      {message ? (
-        <div className="mb-6">
-          <Alert>{message}</Alert>
-        </div>
-      ) : null}
 
       <section className="mb-10">
         <h2 className="font-display mb-4 text-2xl">Pending upgrades</h2>
-        {upgrades.loading ? <LoadingBlock /> : null}
-        {upgrades.error ? <ErrorBlock message={upgrades.error} /> : null}
-        {!upgrades.loading && !upgrades.error && (upgrades.data || []).length === 0 ? (
-          <EmptyBlock
-            title="No pending upgrades"
-            description="Marshall recommendations awaiting review will show here."
-          />
-        ) : null}
-        {!upgrades.loading && !upgrades.error && (upgrades.data || []).length > 0 ? (
-          <div className="space-y-4">
-            {upgrades.data!.map((u) => (
-              <article key={u.id} className="panel p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="m-0 text-lg font-medium">
-                      {displayName(u.member_first_name, u.member_last_name)}
-                    </p>
-                    <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
-                      {u.from_level_name || "—"} → {u.to_level_name}
-                      {u.trip_title ? ` · ${u.trip_title}` : ""}
-                    </p>
-                    <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
-                      Recommended by{" "}
-                      {displayName(u.recommender_first_name, u.recommender_last_name)} ·{" "}
-                      {formatDateTime(u.created_at)}
-                    </p>
-                    {u.recommendation_notes ? (
-                      <p className="mt-3 mb-0 text-sm">{u.recommendation_notes}</p>
-                    ) : null}
-                  </div>
-                  <StatusBadge status={u.status} />
-                </div>
-                <textarea
-                  className="admin-textarea mt-4"
-                  placeholder="Decision notes"
-                  value={notes[u.id] || ""}
-                  onChange={(e) => setNotes({ ...notes, [u.id]: e.target.value })}
-                />
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={busy}
-                    onClick={() => review(u.id, "approved")}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger"
-                    disabled={busy}
-                    onClick={() => review(u.id, "rejected")}
-                  >
-                    Reject
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : null}
+        <DataTable
+          columns={upgradeColumns}
+          rows={upgrades.data || []}
+          loading={upgrades.loading}
+          refreshing={upgrades.refreshing}
+          error={upgrades.error}
+          emptyTitle="No pending upgrades"
+          emptyDescription="Marshall recommendations awaiting review will show here."
+          onRowClick={(u) => {
+            setNotes(u.recommendation_notes || "");
+            setActiveUpgrade(u);
+          }}
+          busyIds={busyIds}
+        />
       </section>
 
       <section>
         <h2 className="font-display mb-4 text-2xl">Recent ratings</h2>
-        {ratings.loading ? <LoadingBlock /> : null}
-        {ratings.error ? <ErrorBlock message={ratings.error} /> : null}
-        {!ratings.loading && !ratings.error && (ratings.data || []).length === 0 ? (
-          <EmptyBlock
-            title="No ratings recorded"
-            description="Marshall trip ratings will appear once submitted."
-          />
-        ) : null}
-        {!ratings.loading && !ratings.error && (ratings.data || []).length > 0 ? (
-          <div className="panel overflow-x-auto">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Member</th>
-                  <th>Trip</th>
-                  <th>Overall</th>
-                  <th>Rated by</th>
-                  <th>When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ratings.data!.map((r) => (
-                  <tr key={r.id}>
-                    <td>
-                      {displayName(r.member_first_name, r.member_last_name)}
-                    </td>
-                    <td>{r.trip_title || r.trip_id}</td>
-                    <td>{Number(r.overall_score).toFixed(1)}</td>
-                    <td>{displayName(r.rater_first_name, r.rater_last_name)}</td>
-                    <td>{formatDateTime(r.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <DataTable
+          columns={ratingColumns}
+          rows={ratings.data || []}
+          loading={ratings.loading}
+          refreshing={ratings.refreshing}
+          error={ratings.error}
+          emptyTitle="No ratings recorded"
+          emptyDescription="Marshall trip ratings will appear once submitted."
+          onRowClick={(r) => setRatingDetail(r)}
+        />
+      </section>
+
+      <Drawer
+        open={Boolean(activeUpgrade)}
+        onClose={() => setActiveUpgrade(null)}
+        title={
+          activeUpgrade
+            ? displayName(activeUpgrade.member_first_name, activeUpgrade.member_last_name)
+            : "Upgrade request"
+        }
+        subtitle={
+          activeUpgrade
+            ? `${activeUpgrade.from_level_name || "—"} → ${activeUpgrade.to_level_name}`
+            : undefined
+        }
+        footer={
+          activeUpgrade ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => void review(activeUpgrade.id, "approved", notes)}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() => void review(activeUpgrade.id, "rejected", notes)}
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setMemberId(activeUpgrade.member_id)}
+              >
+                View member
+              </button>
+            </>
+          ) : null
+        }
+      >
+        {activeUpgrade ? (
+          <div className="space-y-5">
+            <dl className="detail-grid">
+              <div>
+                <dt>Recommended by</dt>
+                <dd>
+                  {displayName(
+                    activeUpgrade.recommender_first_name,
+                    activeUpgrade.recommender_last_name,
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Requested</dt>
+                <dd>{formatDateTime(activeUpgrade.created_at)}</dd>
+              </div>
+              <div>
+                <dt>Trip</dt>
+                <dd>{activeUpgrade.trip_title || "—"}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>
+                  <StatusBadge status={activeUpgrade.status} />
+                </dd>
+              </div>
+            </dl>
+            {activeUpgrade.recommendation_notes ? (
+              <p className="m-0 text-sm leading-relaxed">{activeUpgrade.recommendation_notes}</p>
+            ) : null}
+            <FormField label="Decision notes">
+              <textarea
+                className="admin-textarea"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Optional notes for the decision"
+              />
+            </FormField>
           </div>
         ) : null}
-      </section>
+      </Drawer>
+
+      <Drawer
+        open={Boolean(ratingDetail)}
+        onClose={() => setRatingDetail(null)}
+        title="Rating details"
+        subtitle={ratingDetail?.trip_title || undefined}
+      >
+        {ratingDetail ? (
+          <div className="space-y-4">
+            <dl className="detail-grid">
+              <div>
+                <dt>Member</dt>
+                <dd>
+                  {displayName(ratingDetail.member_first_name, ratingDetail.member_last_name)}
+                </dd>
+              </div>
+              <div>
+                <dt>Overall</dt>
+                <dd>{Number(ratingDetail.overall_score).toFixed(1)}</dd>
+              </div>
+              <div>
+                <dt>Rated by</dt>
+                <dd>
+                  {displayName(ratingDetail.rater_first_name, ratingDetail.rater_last_name)}
+                </dd>
+              </div>
+              <div>
+                <dt>When</dt>
+                <dd>{formatDateTime(ratingDetail.created_at)}</dd>
+              </div>
+            </dl>
+            {ratingDetail.public_notes ? (
+              <p className="m-0 text-sm">{ratingDetail.public_notes}</p>
+            ) : null}
+            {(ratingDetail.scores || []).length > 0 ? (
+              <ul className="m-0 list-none space-y-2 p-0">
+                {ratingDetail.scores!.map((s) => (
+                  <li key={s.criterionId} className="flex justify-between text-sm">
+                    <span>{s.name}</span>
+                    <span>{s.score}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </Drawer>
+
+      <MemberDrawer
+        memberId={memberId}
+        open={Boolean(memberId)}
+        onClose={() => setMemberId(null)}
+      />
+      <TripQuickDrawer
+        tripId={tripId}
+        open={Boolean(tripId)}
+        onClose={() => setTripId(null)}
+      />
     </div>
   );
 }
