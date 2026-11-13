@@ -2,6 +2,8 @@ const express = require('express');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/response');
 const tripService = require('../services/tripService');
+const { validate } = require('../validators/validate');
+const { tripSchema } = require('../validators/schemas');
 const {
   authenticate,
   requireApprovedMember,
@@ -111,6 +113,7 @@ router.get(
 router.post(
   '/',
   requirePermission('trips.create', 'trips.manage'),
+  validate(tripSchema),
   asyncHandler(async (req, res) => {
     const data = await tripService.createTrip(req.body, req.user, req);
     return created(res, data, 'Trip created');

@@ -23,6 +23,10 @@ const QUICK_ROLES = [
   { code: "marshall", label: "Marshall" },
 ] as const;
 
+function roleLabel(code: string) {
+  return QUICK_ROLES.find((r) => r.code === code)?.label || code;
+}
+
 export function MemberDrawer({
   memberId,
   open,
@@ -115,7 +119,7 @@ export function MemberDrawer({
       setData(next);
       emitUpdated(next);
       await afterMemberMutation(queryClient);
-      toast.success(`Assigned ${code}`);
+      toast.success(`Assigned ${roleLabel(code)}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to assign role");
     } finally {
@@ -131,7 +135,7 @@ export function MemberDrawer({
       setData(next);
       emitUpdated(next);
       await afterMemberMutation(queryClient);
-      toast.success(`Removed ${code}`);
+      toast.success(`Removed ${roleLabel(code)}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to remove role");
     } finally {

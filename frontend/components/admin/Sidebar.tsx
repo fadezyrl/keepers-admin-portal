@@ -14,7 +14,7 @@ const NAV_GROUPS = [
     items: [
       { href: "/members", label: "Members" },
       { href: "/marshalls", label: "Marshalls" },
-      { href: "/roles", label: "Roles" },
+      { href: "/roles", label: "Role management" },
       { href: "/ratings", label: "Ratings" },
     ],
   },

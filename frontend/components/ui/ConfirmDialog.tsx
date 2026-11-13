@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 
 export function ConfirmDialog({
   open,
@@ -15,7 +15,7 @@ export function ConfirmDialog({
 }: {
   open: boolean;
   title: string;
-  description?: string;
+  description?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   tone?: "danger" | "primary";
@@ -50,9 +50,15 @@ export function ConfirmDialog({
           {title}
         </h3>
         {description ? (
-          <p className="mt-3 mb-0 text-sm leading-relaxed text-[var(--keepers-muted)]">
-            {description}
-          </p>
+          typeof description === "string" ? (
+            <p className="mt-3 mb-0 text-sm leading-relaxed text-[var(--keepers-muted)]">
+              {description}
+            </p>
+          ) : (
+            <div className="mt-3 text-sm leading-relaxed text-[var(--keepers-muted)]">
+              {description}
+            </div>
+          )
         ) : null}
         <div className="dialog-actions">
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>

@@ -11,7 +11,10 @@ function errorHandler(err, req, res, _next) {
   }
 
   if (err.name === 'ZodError') {
-    return fail(res, 422, 'VALIDATION_ERROR', 'Validation failed', err.errors);
+    const issues = err.issues || err.errors || [];
+    const message =
+      issues[0]?.message || 'Validation failed';
+    return fail(res, 422, 'VALIDATION_ERROR', message, issues);
   }
 
   if (err.code === '23505') {
@@ -20,6 +23,16 @@ function errorHandler(err, req, res, _next) {
 
   if (err.code === '23503') {
     return fail(res, 400, 'FOREIGN_KEY', 'Related record not found', { detail: err.detail });
+  }
+
+  // Postgres: invalid date/time literal (e.g. free-text "5011")
+  if (err.code === '22008' || err.code === '22007') {
+    return fail(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'Invalid date or time. Use YYYY-MM-DD and HH:MM.',
+    );
   }
 
   console.error('[error]', {

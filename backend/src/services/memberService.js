@@ -159,7 +159,10 @@ async function getMemberById(id, viewer) {
     `SELECT t.id, t.title, t.trip_date, t.destination
      FROM trip_attendance ta
      JOIN trips t ON t.id = ta.trip_id
-     WHERE ta.user_id = $1 AND ta.attended = TRUE
+     WHERE ta.user_id = $1
+       AND ta.attended = TRUE
+       AND t.status = 'completed'
+       AND t.deleted_at IS NULL
      ORDER BY t.trip_date DESC`,
     [id],
   );

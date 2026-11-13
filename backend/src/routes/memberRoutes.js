@@ -2,6 +2,7 @@ const express = require('express');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { ok } = require('../utils/response');
 const memberService = require('../services/memberService');
+const memberProgressService = require('../services/memberProgressService');
 const {
   authenticate,
   requireApprovedMember,
@@ -42,11 +43,37 @@ router.get(
   }),
 );
 
+/** Authenticated member's own progress — never accepts a client member id */
 router.get(
-  '/:id',
+  '/me/progress',
   requireApprovedMember,
   asyncHandler(async (req, res) => {
-    const data = await memberService.getMemberById(req.params.id, req.user);
+    const data = await memberProgressService.getMyProgress(req.user.id);
+    return ok(res, data);
+  }),
+);
+
+router.get(
+  '/me/trips',
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await memberProgressService.getMyTrips(req.user.id, {
+      filter: req.query.filter || 'all',
+      page: Number(req.query.page || 1),
+      limit: Number(req.query.limit || 20),
+    });
+    return ok(res, data);
+  }),
+);
+
+router.get(
+  '/me/trips/:tripId',
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await memberProgressService.getMyTripPerformance(
+      req.user.id,
+      req.params.tripId,
+    );
     return ok(res, data);
   }),
 );
@@ -57,6 +84,15 @@ router.patch(
   asyncHandler(async (req, res) => {
     const data = await memberService.updateOwnProfile(req.user.id, req.body, req);
     return ok(res, data, 'Profile updated');
+  }),
+);
+
+router.get(
+  '/:id',
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await memberService.getMemberById(req.params.id, req.user);
+    return ok(res, data);
   }),
 );
 

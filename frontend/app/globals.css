@@ -751,3 +751,67 @@ a {
   background: var(--keepers-cream);
   border: 1px solid var(--keepers-line);
 }
+
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  background: var(--keepers-cream);
+  border: 1px solid var(--keepers-line);
+  color: var(--keepers-ink);
+}
+
+.role-access {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.role-access-allowed {
+  background: rgba(61, 90, 69, 0.1);
+  border-color: rgba(61, 90, 69, 0.22);
+  color: var(--keepers-success);
+}
+
+.role-access-scoped {
+  background: rgba(138, 106, 47, 0.1);
+  border-color: rgba(138, 106, 47, 0.22);
+  color: var(--keepers-warn);
+}
+
+.role-access-denied,
+.role-access-unavailable {
+  background: rgba(17, 17, 16, 0.04);
+  border-color: var(--keepers-line);
+  color: var(--keepers-muted);
+}
+
+.role-matrix-table th:first-child,
+.role-matrix-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--keepers-white);
+}
+
+.role-matrix-table thead th:first-child {
+  background: var(--keepers-cream);
+}
+
+.role-matrix-category td {
+  background: var(--keepers-ivory);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--keepers-muted);
+  font-weight: 600;
+  padding-top: 0.95rem;
+  padding-bottom: 0.95rem;
+}

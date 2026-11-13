@@ -39,13 +39,36 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+const dateYmd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD')
+  .refine((value) => {
+    const [y, m, d] = value.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return (
+      dt.getUTCFullYear() === y &&
+      dt.getUTCMonth() === m - 1 &&
+      dt.getUTCDate() === d
+    );
+  }, 'Invalid calendar date');
+
+const timeHm = z
+  .string()
+  .regex(
+    /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/,
+    'Time must be HH:MM (24-hour)',
+  );
+
 const tripSchema = z.object({
-  title: z.string().min(3).max(200),
+  title: z.string().min(3, 'Title must be at least 3 characters').max(200),
   description: z.string().optional(),
-  destination: z.string().min(2),
+  destination: z.string().min(2, 'Destination is required'),
   meetingPoint: z.string().optional(),
-  date: z.string().min(8),
-  time: z.string().optional(),
+  date: dateYmd,
+  time: z.preprocess(
+    (value) => (value === '' || value == null ? undefined : value),
+    timeHm.optional(),
+  ),
   difficulty: z.enum(['Easy', 'Moderate', 'Advanced', 'Expert']).optional(),
   tripType: z.string().optional(),
   requiredMembership: z.string().optional(),

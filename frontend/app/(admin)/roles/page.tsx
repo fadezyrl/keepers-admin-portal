@@ -1,22 +1,35 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, buildQuery } from "@/lib/api";
+import { api, buildQuery } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useAdminQuery } from "@/lib/useAdminQuery";
 import { queryKeys, stale } from "@/lib/queryKeys";
 import { afterMemberMutation } from "@/lib/invalidate";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useToast } from "@/lib/toast";
-import type { Paginated, Member } from "@/lib/types";
+import type { Member, Paginated } from "@/lib/types";
+import {
+  ROLE_META,
+  ROLE_ORDER,
+  adminAssignableRoles,
+  roleDisplayName,
+  type RoleCode,
+} from "@/lib/rolesCatalog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { DataTable, type DataColumn } from "@/components/ui/DataTable";
-import { FilterBar } from "@/components/ui/FilterBar";
+import { FilterBar, SearchInput } from "@/components/ui/FilterBar";
 import { RowActions } from "@/components/ui/RowActions";
-import { FormField } from "@/components/ui/FormField";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ErrorBlock } from "@/components/ui/StateBlock";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { MemberDrawer } from "@/components/admin/MemberDrawer";
+import { RoleOverview } from "@/components/admin/roles/RoleOverview";
+import { PermissionsMatrix } from "@/components/admin/roles/PermissionsMatrix";
+import { RoleDetailDrawer } from "@/components/admin/roles/RoleDetailDrawer";
+import { AssignRoleDrawer } from "@/components/admin/roles/AssignRoleDrawer";
+import { MemberPermissionsDrawer } from "@/components/admin/roles/MemberPermissionsDrawer";
 
 type RoleInfo = {
   id: string;
@@ -24,109 +37,98 @@ type RoleInfo = {
   name: string;
   description?: string | null;
   permissions: string[];
+  memberCount: number;
 };
 
 type RolesPayload = {
   roles: RoleInfo[];
   permissions: Array<{ id: string; code: string; name: string; description?: string }>;
+  permissionsByRole: Record<string, string[]>;
+  memberCountByRole: Record<string, number>;
+  uniqueMembers: number;
+  organizedTripCountByUserId: Record<string, number>;
+  assignedDrivesByUserId: Record<
+    string,
+    { count: number; titles: string[] }
+  >;
 };
 
-const MANAGEABLE = ["member", "pre_marshall", "marshall"] as const;
+type TeamFilter = "all" | RoleCode;
+
+function actorRoleCodes(user: ReturnType<typeof useAuth>["user"]): string[] {
+  return (user?.roles || []).map((r) => (typeof r === "string" ? r : r.code));
+}
 
 export default function RolesPage() {
   const toast = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
+  const roles = actorRoleCodes(user);
+  const isSuperAdmin = roles.includes("super_admin");
+  const assignable = adminAssignableRoles(roles);
+
   const rolesQuery = useAdminQuery(
     queryKeys.dashboard.roles(),
     (signal) => api.get<RolesPayload>("/dashboard/roles", { signal }),
     { staleTime: stale.list },
   );
-  const [roleFilter, setRoleFilter] = useState("marshall");
-  const membersParams = useMemo(
-    () => ({ role: roleFilter, limit: 100 }),
-    [roleFilter],
-  );
-  const membersQuery = useAdminQuery(
-    queryKeys.members.list(membersParams),
-    (signal) =>
-      api.get<Paginated<Member>>(`/members${buildQuery(membersParams)}`, { signal }),
-    { staleTime: stale.operational },
-  );
 
-  const [pickerQ, setPickerQ] = useState("");
-  const debouncedPickerQ = useDebouncedValue(pickerQ, 300);
-  const pickerParams = useMemo(
+  const [teamFilter, setTeamFilter] = useState<TeamFilter>("all");
+  const [teamQ, setTeamQ] = useState("");
+  const debouncedTeamQ = useDebouncedValue(teamQ, 250);
+  const [page, setPage] = useState(1);
+  const limit = 25;
+
+  const teamParams = useMemo(
     () => ({
-      q: debouncedPickerQ.trim() || undefined,
-      status: "approved",
-      limit: 8,
+      role: teamFilter === "all" ? undefined : teamFilter,
+      q: debouncedTeamQ.trim() || undefined,
+      limit,
+      page,
     }),
-    [debouncedPickerQ],
+    [teamFilter, debouncedTeamQ, page],
   );
-  const pickerQuery = useAdminQuery(
-    queryKeys.members.list(pickerParams),
+
+  const teamQuery = useAdminQuery(
+    queryKeys.members.list(teamParams),
     (signal) =>
-      debouncedPickerQ.trim().length < 2
-        ? Promise.resolve({ items: [], pagination: { page: 1, limit: 8, total: 0 } } as Paginated<Member>)
-        : api.get<Paginated<Member>>(`/members${buildQuery(pickerParams)}`, { signal }),
+      api.get<Paginated<Member>>(`/members${buildQuery(teamParams)}`, { signal }),
     { staleTime: stale.operational },
   );
 
-  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
-  const [assignRole, setAssignRole] = useState("marshall");
-  const [busy, setBusy] = useState(false);
-  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
-  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [detailRole, setDetailRole] = useState<RoleCode | null>(null);
+  const [memberDrawerId, setMemberDrawerId] = useState<string | null>(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignMode, setAssignMode] = useState<"assign" | "remove">("assign");
+  const [assignMember, setAssignMember] = useState<Member | null>(null);
+  const [assignRoleCode, setAssignRoleCode] = useState<RoleCode | null>(null);
+  const [permissionsMember, setPermissionsMember] = useState<Member | null>(null);
 
-  async function onAssign(e: FormEvent) {
-    e.preventDefault();
-    if (!selectedMember) {
-      toast.error("Select a member from search results");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.post(`/members/${selectedMember.id}/roles`, { role: assignRole });
-      toast.success(`Assigned “${assignRole}” to ${selectedMember.name}`);
-      setSelectedMember(null);
-      setPickerQ("");
-      await afterMemberMutation(queryClient);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Failed to assign role");
-    } finally {
-      setBusy(false);
-    }
+  const permissionsByRole =
+    rolesQuery.data?.permissionsByRole ||
+    Object.fromEntries(
+      (rolesQuery.data?.roles || []).map((r) => [r.code, r.permissions || []]),
+    );
+
+  const organized = rolesQuery.data?.organizedTripCountByUserId || {};
+  const assigned = rolesQuery.data?.assignedDrivesByUserId || {};
+
+  async function refreshRoleViews() {
+    await afterMemberMutation(queryClient);
   }
 
-  async function onRemove(id: string, role: string) {
-    setBusyIds((prev) => new Set(prev).add(id));
-    try {
-      await api.delete(`/members/${id}/roles/${role}`);
-      membersQuery.setData((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          items: prev.items.filter((m) => m.id !== id),
-          pagination: {
-            ...prev.pagination,
-            total:
-              typeof prev.pagination.total === "number"
-                ? Math.max(0, prev.pagination.total - 1)
-                : prev.pagination.total,
-          },
-        };
-      });
-      await afterMemberMutation(queryClient);
-      toast.success(`Removed “${role}”`);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Failed to remove role");
-    } finally {
-      setBusyIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+  function openAssign(member?: Member | null, role?: RoleCode | null) {
+    setAssignMode("assign");
+    setAssignMember(member || null);
+    setAssignRoleCode(role || "marshall");
+    setAssignOpen(true);
+  }
+
+  function openRemove(member: Member, role: RoleCode) {
+    setAssignMode("remove");
+    setAssignMember(member);
+    setAssignRoleCode(role);
+    setAssignOpen(true);
   }
 
   const columns: DataColumn<Member>[] = [
@@ -142,161 +144,251 @@ export default function RolesPage() {
     },
     {
       key: "roles",
-      header: "Roles",
-      cell: (m) => (m.roles || []).map((r) => r.code || String(r)).join(", ") || "—",
+      header: "Current roles",
+      cell: (m) => {
+        const codes = (m.roles || []).map((r) => r.code);
+        if (!codes.length) return "—";
+        return (
+          <div className="flex flex-wrap gap-1.5">
+            {codes.map((code) => (
+              <span key={code} className="role-chip">
+                {roleDisplayName(code)}
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "status",
+      header: "Account status",
+      cell: (m) => <StatusBadge status={m.status} />,
+    },
+    {
+      key: "drives",
+      header: "Assigned drives",
+      cell: (m) => {
+        const codes = new Set((m.roles || []).map((r) => r.code));
+        const parts: string[] = [];
+        if (codes.has("marshall")) {
+          const n = organized[m.id] || 0;
+          parts.push(n ? `${n} organized` : "No organized drives");
+        }
+        if (codes.has("pre_marshall")) {
+          const info = assigned[m.id];
+          if (info?.count) {
+            parts.push(
+              info.titles.length
+                ? info.titles.join(", ")
+                : `${info.count} assigned`,
+            );
+          } else {
+            parts.push("No assigned drives");
+          }
+        }
+        if (!parts.length) return "—";
+        return (
+          <span className="text-sm text-[var(--keepers-muted)]">
+            {parts.join(" · ")}
+          </span>
+        );
+      },
     },
     {
       key: "actions",
       header: "Actions",
-      cell: (m) => (
-        <RowActions
-          actions={[
-            { label: "View", onClick: () => setDrawerId(m.id) },
-            {
-              label: `Remove ${roleFilter}`,
-              onClick: () => void onRemove(m.id, roleFilter),
-              tone: "danger",
-            },
-          ]}
-        />
-      ),
+      cell: (m) => {
+        const codes = (m.roles || []).map((r) => r.code);
+        const removable = codes.filter((c) =>
+          assignable.includes(c as RoleCode),
+        ) as RoleCode[];
+        return (
+          <RowActions
+            actions={[
+              {
+                label: "View profile",
+                onClick: () => setMemberDrawerId(m.id),
+              },
+              {
+                label: "Add role",
+                onClick: () => openAssign(m),
+                hidden: assignable.length === 0,
+              },
+              {
+                label: "Remove role",
+                onClick: () => {
+                  const preferred =
+                    (teamFilter !== "all" &&
+                      removable.includes(teamFilter as RoleCode) &&
+                      (teamFilter as RoleCode)) ||
+                    removable[0];
+                  if (!preferred) {
+                    toast.error("No removable roles on this member");
+                    return;
+                  }
+                  openRemove(m, preferred);
+                },
+                tone: "danger",
+                hidden: removable.length === 0,
+              },
+              {
+                label: "View permissions",
+                onClick: () => setPermissionsMember(m),
+              },
+            ]}
+          />
+        );
+      },
     },
   ];
 
   return (
     <div>
       <PageHeader
-        title="Roles & permissions"
-        subtitle="View role grants and assign Member, Pre-Marshall, and Marshall roles. Admin escalation is restricted."
+        title="Role management"
+        subtitle="Understand each role, compare access in plain language, and assign Marshall or Pre-Marshall privileges without digging through permission codes."
+        actions={
+          assignable.length ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => openAssign(null, "marshall")}
+            >
+              Assign role
+            </button>
+          ) : null
+        }
       />
 
-      <section className="mb-10">
-        <h2 className="font-display mb-4 text-2xl">Role matrix</h2>
-        {rolesQuery.loading ? <TableSkeleton rows={3} cols={2} /> : null}
-        {rolesQuery.error ? <ErrorBlock message={rolesQuery.error} /> : null}
-        {!rolesQuery.loading && !rolesQuery.error ? (
-          <div className="grid gap-4 lg:grid-cols-2">
-            {(rolesQuery.data?.roles || []).map((role) => (
-              <article key={role.id} className="panel p-5">
-                <h3 className="font-display m-0 text-xl">{role.name}</h3>
-                <p className="mt-1 font-mono text-xs text-[var(--keepers-muted)]">{role.code}</p>
-                {role.description ? (
-                  <p className="mt-2 text-sm text-[var(--keepers-muted)]">{role.description}</p>
-                ) : null}
-                <ul className="mt-4 m-0 list-none space-y-1 p-0">
-                  {(role.permissions || []).map((code) => (
-                    <li key={code} className="font-mono text-xs text-[var(--keepers-muted)]">
-                      {code}
-                    </li>
-                  ))}
-                  {(role.permissions || []).length === 0 ? (
-                    <li className="text-sm text-[var(--keepers-muted)]">No permissions mapped</li>
-                  ) : null}
-                </ul>
-              </article>
-            ))}
-          </div>
-        ) : null}
-      </section>
+      {rolesQuery.error ? <ErrorBlock message={rolesQuery.error} /> : null}
+      {rolesQuery.loading && !rolesQuery.data ? <TableSkeleton rows={3} cols={3} /> : null}
 
-      <section className="mb-10">
-        <h2 className="font-display mb-4 text-2xl">Assign role</h2>
-        <form onSubmit={onAssign} className="panel grid gap-4 p-6 lg:grid-cols-[1.4fr_0.8fr_auto]">
-          <div>
-            <FormField label="Find member">
-              <input
-                className="admin-input"
-                value={pickerQ}
-                onChange={(e) => {
-                  setPickerQ(e.target.value);
-                  setSelectedMember(null);
-                }}
-                placeholder="Search name, email, username…"
-              />
-            </FormField>
-            {selectedMember ? (
-              <p className="mt-2 mb-0 text-sm">
-                Selected: <strong>{selectedMember.name}</strong> (@{selectedMember.username})
-              </p>
-            ) : null}
-            {debouncedPickerQ.trim().length >= 2 && !selectedMember ? (
-              <ul className="mt-2 m-0 max-h-48 list-none overflow-y-auto border border-[var(--keepers-line)] p-0">
-                {(pickerQuery.data?.items || []).map((m) => (
-                  <li key={m.id}>
-                    <button
-                      type="button"
-                      className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--keepers-cream)]"
-                      onClick={() => {
-                        setSelectedMember(m);
-                        setPickerQ(m.name);
-                      }}
-                    >
-                      {m.name}
-                      <span className="text-[var(--keepers-muted)]"> · @{m.username}</span>
-                    </button>
-                  </li>
-                ))}
-                {!pickerQuery.loading && (pickerQuery.data?.items || []).length === 0 ? (
-                  <li className="px-3 py-2 text-sm text-[var(--keepers-muted)]">No matches</li>
-                ) : null}
-              </ul>
-            ) : null}
-          </div>
-          <FormField label="Role">
-            <select
-              className="admin-select"
-              value={assignRole}
-              onChange={(e) => setAssignRole(e.target.value)}
-            >
-              {MANAGEABLE.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </FormField>
-          <div className="flex items-end">
-            <button type="submit" className="btn btn-primary" disabled={busy || !selectedMember}>
-              Assign
-            </button>
-          </div>
-        </form>
-      </section>
+      {rolesQuery.data ? (
+        <>
+          <RoleOverview
+            roles={rolesQuery.data.roles}
+            uniqueMembers={rolesQuery.data.uniqueMembers}
+            onViewDetails={setDetailRole}
+          />
+
+          <PermissionsMatrix
+            permissionsByRole={permissionsByRole}
+            canToggleTechnical={isSuperAdmin}
+          />
+        </>
+      ) : null}
 
       <section>
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-          <h2 className="font-display m-0 text-2xl">Members by role</h2>
-          <FilterBar>
-            <select
-              className="admin-select"
-              value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
-            >
-              {MANAGEABLE.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </FilterBar>
+          <div>
+            <h2 className="font-display m-0 text-2xl">Team by role</h2>
+            <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
+              Search and filter members, then manage roles from the drawer.
+            </p>
+          </div>
         </div>
+
         <DataTable
           columns={columns}
-          rows={membersQuery.data?.items || []}
-          loading={membersQuery.loading}
-          refreshing={membersQuery.refreshing}
-          error={membersQuery.error}
-          emptyTitle="No members"
-          emptyDescription="No members currently hold this role."
-          onRowClick={(m) => setDrawerId(m.id)}
-          busyIds={busyIds}
+          rows={teamQuery.data?.items || []}
+          loading={teamQuery.loading}
+          refreshing={teamQuery.refreshing || rolesQuery.refreshing}
+          error={teamQuery.error}
+          emptyTitle="No members found"
+          emptyDescription="Try another role filter or search term."
+          page={page}
+          limit={limit}
+          total={teamQuery.data?.pagination.total}
+          onPageChange={setPage}
+          onRowClick={(m) => setMemberDrawerId(m.id)}
+          toolbar={
+            <FilterBar>
+              <SearchInput
+                value={teamQ}
+                onChange={(v) => {
+                  setTeamQ(v);
+                  setPage(1);
+                }}
+                placeholder="Search team…"
+                className="max-w-sm min-w-[14rem] flex-1"
+              />
+              <select
+                className="admin-select"
+                value={teamFilter}
+                onChange={(e) => {
+                  setTeamFilter(e.target.value as TeamFilter);
+                  setPage(1);
+                }}
+                aria-label="Filter by role"
+              >
+                <option value="all">All roles</option>
+                {ROLE_ORDER.map((code) => (
+                  <option key={code} value={code}>
+                    {ROLE_META[code].name}
+                  </option>
+                ))}
+              </select>
+            </FilterBar>
+          }
         />
       </section>
 
+      <RoleDetailDrawer
+        roleCode={detailRole}
+        open={Boolean(detailRole)}
+        onClose={() => setDetailRole(null)}
+        memberCount={
+          detailRole
+            ? rolesQuery.data?.memberCountByRole?.[detailRole] ??
+              rolesQuery.data?.roles.find((r) => r.code === detailRole)?.memberCount ??
+              0
+            : 0
+        }
+        permissionsByRole={permissionsByRole}
+        onOpenMember={(id) => {
+          setDetailRole(null);
+          setMemberDrawerId(id);
+        }}
+      />
+
+      <AssignRoleDrawer
+        key={`${assignOpen}-${assignMember?.id || "new"}-${assignMode}-${assignRoleCode || ""}`}
+        open={assignOpen}
+        onClose={() => setAssignOpen(false)}
+        actorRoles={roles}
+        initialMember={assignMember}
+        initialRole={assignRoleCode}
+        mode={assignMode}
+        onCompleted={async () => {
+          toast.success(
+            assignMode === "remove" ? "Role removed" : "Role assigned",
+          );
+          await refreshRoleViews();
+        }}
+      />
+
       <MemberDrawer
-        memberId={drawerId}
-        open={Boolean(drawerId)}
-        onClose={() => setDrawerId(null)}
+        memberId={memberDrawerId}
+        open={Boolean(memberDrawerId)}
+        onClose={() => setMemberDrawerId(null)}
+        onUpdated={() => {
+          void refreshRoleViews();
+        }}
+        onRemoved={() => {
+          setMemberDrawerId(null);
+          void refreshRoleViews();
+        }}
+      />
+
+      <MemberPermissionsDrawer
+        member={permissionsMember}
+        open={Boolean(permissionsMember)}
+        permissionsByRole={permissionsByRole}
+        onClose={() => setPermissionsMember(null)}
+        onOpenProfile={() => {
+          if (permissionsMember) setMemberDrawerId(permissionsMember.id);
+          setPermissionsMember(null);
+        }}
       />
     </div>
   );

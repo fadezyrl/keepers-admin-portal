@@ -268,6 +268,13 @@ async function getTrip(id, userId) {
   return mapTrip(row, { userId });
 }
 
+function normalizeTripTime(time) {
+  if (!time) return null;
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return `${time}:00`;
+  if (/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(time)) return time;
+  throw new AppError(400, 'VALIDATION_ERROR', 'Time must be HH:MM (24-hour)');
+}
+
 async function createTrip(payload, actor, req) {
   if (!hasPermission(actor, 'trips.create') && !hasPermission(actor, 'trips.manage')) {
     throw new AppError(403, 'FORBIDDEN', 'Cannot create trips');
@@ -283,6 +290,7 @@ async function createTrip(payload, actor, req) {
 
   const status = payload.publish ? 'published' : payload.status || 'draft';
   const organizerId = payload.organizerId || actor.id;
+  const tripTime = normalizeTripTime(payload.time);
 
   const res = await query(
     `INSERT INTO trips (
@@ -301,7 +309,7 @@ async function createTrip(payload, actor, req) {
       payload.destination,
       payload.meetingPoint || null,
       payload.date,
-      payload.time || null,
+      tripTime,
       payload.difficulty || 'Moderate',
       payload.tripType || null,
       requiredLevelId,
