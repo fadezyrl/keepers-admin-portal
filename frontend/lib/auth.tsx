@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, getStoredToken, setStoredToken } from "./api";
 import type { AdminUser, AuthSession } from "./types";
 
@@ -58,7 +59,18 @@ function hasAdminAccess(user: AdminUser): boolean {
   return perms.includes("dashboard.read") || perms.includes("members.manage");
 }
 
+function permissionFingerprint(user: AdminUser | null) {
+  if (!user) return "";
+  const roles = (user.roles || [])
+    .map((r) => (typeof r === "string" ? r : r.code))
+    .sort()
+    .join(",");
+  const perms = [...(user.permissions || [])].sort().join(",");
+  return `${user.id}|${roles}|${perms}`;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,58 +87,75 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     api
       .get<AdminUser>("/auth/me")
       .then((me) => {
+        const prev = permissionFingerprint(storedUser);
+        const next = permissionFingerprint(me);
+        if (prev && prev !== next) {
+          queryClient.clear();
+        }
         setUser(me);
         persistUser(me);
       })
       .catch(() => {
+        queryClient.clear();
         setStoredToken(null);
         persistUser(null);
         setToken(null);
         setUser(null);
       });
-  }, []);
+  }, [queryClient]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const data = await api.post<LoginResult>(
-      "/auth/login",
-      { email, password },
-      { auth: false },
-    );
-
-    if (data.accessBlocked || !data.session?.access_token) {
-      throw new ApiError(
-        data.message || "Access blocked",
-        data.blockReason || "ACCESS_BLOCKED",
-        403,
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const data = await api.post<LoginResult>(
+        "/auth/login",
+        { email, password },
+        { auth: false },
       );
-    }
 
-    if (!hasAdminAccess(data.user)) {
-      throw new ApiError(
-        "This portal is restricted to Keepers administrators",
-        "FORBIDDEN",
-        403,
-      );
-    }
+      if (data.accessBlocked || !data.session?.access_token) {
+        throw new ApiError(
+          data.message || "Access blocked",
+          data.blockReason || "ACCESS_BLOCKED",
+          403,
+        );
+      }
 
-    setStoredToken(data.session.access_token);
-    persistUser(data.user);
-    setToken(data.session.access_token);
-    setUser(data.user);
-  }, []);
+      if (!hasAdminAccess(data.user)) {
+        throw new ApiError(
+          "This portal is restricted to Keepers administrators",
+          "FORBIDDEN",
+          403,
+        );
+      }
+
+      // Never carry over previous account's cached admin data
+      queryClient.clear();
+      setStoredToken(data.session.access_token);
+      persistUser(data.user);
+      setToken(data.session.access_token);
+      setUser(data.user);
+    },
+    [queryClient],
+  );
 
   const logout = useCallback(() => {
+    queryClient.clear();
     setStoredToken(null);
     persistUser(null);
     setToken(null);
     setUser(null);
-  }, []);
+  }, [queryClient]);
 
   const refreshMe = useCallback(async () => {
     const me = await api.get<AdminUser>("/auth/me");
+    const prev = permissionFingerprint(user);
+    const next = permissionFingerprint(me);
+    if (prev && prev !== next) {
+      queryClient.clear();
+    }
     setUser(me);
     persistUser(me);
-  }, []);
+  }, [user, queryClient]);
 
   const value = useMemo(
     () => ({ token, user, loading, login, logout, refreshMe }),

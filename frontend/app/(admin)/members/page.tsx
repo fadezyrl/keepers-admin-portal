@@ -2,8 +2,11 @@
 
 import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterMemberMutation } from "@/lib/invalidate";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useSelection } from "@/lib/useSelection";
 import { useToast } from "@/lib/toast";
@@ -23,6 +26,7 @@ const PAGE_SIZE = 20;
 function MembersInner() {
   const searchParams = useSearchParams();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const initialStatus = searchParams.get("status") || "";
   const [q, setQ] = useState("");
   const [status, setStatus] = useState(initialStatus);
@@ -34,20 +38,22 @@ function MembersInner() {
   const [bulkConfirm, setBulkConfirm] = useState<"approved" | "rejected" | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const path = useMemo(
-    () =>
-      `/members${buildQuery({
-        q: debouncedQ.trim() || undefined,
-        status: status || undefined,
-        page,
-        limit: PAGE_SIZE,
-      })}`,
+  const listParams = useMemo(
+    () => ({
+      q: debouncedQ.trim() || undefined,
+      status: status || undefined,
+      page,
+      limit: PAGE_SIZE,
+    }),
     [debouncedQ, status, page],
   );
 
-  const { data, error, loading, refreshing, setData } = useAsync(
-    () => api.get<Paginated<Member>>(path),
-    [path],
+  const path = useMemo(() => `/members${buildQuery(listParams)}`, [listParams]);
+
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.members.list(listParams),
+    (signal) => api.get<Paginated<Member>>(path, { signal }),
+    { staleTime: stale.operational },
   );
 
   const items = data?.items || [];
@@ -74,6 +80,7 @@ function MembersInner() {
           items: prev.items.map((m) => (m.id === id ? { ...m, status: nextStatus } : m)),
         };
       });
+      await afterMemberMutation(queryClient);
       toast.success(`Member marked ${nextStatus}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update member");
@@ -115,6 +122,7 @@ function MembersInner() {
     clear();
     setBulkConfirm(null);
     setBulkBusy(false);
+    await afterMemberMutation(queryClient);
     toast.push(
       `Bulk ${nextStatus}: ${ok} succeeded${fail ? `, ${fail} failed` : ""}`,
       fail ? "danger" : "success",

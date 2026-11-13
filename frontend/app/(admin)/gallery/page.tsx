@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterGalleryMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
@@ -22,9 +25,11 @@ type GalleryItem = {
 
 export default function GalleryPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, reload, setData } = useAsync(
-    () => api.get<GalleryItem[]>("/content/gallery?activeOnly=false"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.content.gallery(),
+    (signal) => api.get<GalleryItem[]>("/content/gallery?activeOnly=false", { signal }),
+    { staleTime: stale.content },
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [active, setActive] = useState<GalleryItem | null>(null);
@@ -49,7 +54,7 @@ export default function GalleryPage() {
       setImage("");
       setCaption("");
       setOrder("0");
-      await reload();
+      await afterGalleryMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save item");
     } finally {
@@ -62,6 +67,7 @@ export default function GalleryPage() {
     try {
       await api.delete(`/content/gallery/${id}`);
       setData((prev) => (prev || []).filter((item) => item.id !== id));
+      await afterGalleryMutation(queryClient);
       toast.success("Gallery item removed");
       setDeleteId(null);
       if (active?.id === id) setActive(null);

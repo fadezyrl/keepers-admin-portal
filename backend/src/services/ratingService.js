@@ -2,6 +2,7 @@ const { query, withTransaction } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
 const { createNotification } = require('./notificationService');
+const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 
 async function listCriteria({ includeInactive = false } = {}) {
@@ -86,6 +87,31 @@ async function createRating(payload, actor, req) {
     throw new AppError(400, 'INVALID', 'Cannot rate yourself');
   }
 
+  const tripRes = await query(
+    `SELECT id, organizer_id, status FROM trips WHERE id = $1 AND deleted_at IS NULL`,
+    [tripId],
+  );
+  const trip = tripRes.rows[0];
+  if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+
+  const canManageAll = hasPermission(actor, 'trips.manage');
+  const isOrganizer = trip.organizer_id === actor.id;
+  if (!canManageAll && !isOrganizer) {
+    throw new AppError(403, 'FORBIDDEN', 'Only the drive organizer or admin can rate participants');
+  }
+
+  const attendance = await query(
+    `SELECT attended FROM trip_attendance WHERE trip_id = $1 AND user_id = $2`,
+    [tripId, memberId],
+  );
+  if (!attendance.rows[0] || attendance.rows[0].attended !== true) {
+    throw new AppError(
+      400,
+      'NOT_ELIGIBLE',
+      'Member must have verified attendance before they can be rated',
+    );
+  }
+
   const criteria = await listCriteria();
   const criteriaById = new Map(criteria.map((c) => [c.id, c]));
   const criteriaByCode = new Map(criteria.map((c) => [c.code, c]));
@@ -110,6 +136,19 @@ async function createRating(payload, actor, req) {
     normalized.reduce((sum, s) => sum + s.score, 0) / normalized.length;
 
   const rating = await withTransaction(async (client) => {
+    const existingRating = await client.query(
+      `SELECT id FROM trip_ratings
+       WHERE trip_id = $1 AND member_id = $2 AND rated_by = $3`,
+      [tripId, memberId, actor.id],
+    );
+    if (existingRating.rows[0] && payload.allowUpdate !== true) {
+      throw new AppError(
+        409,
+        'ALREADY_RATED',
+        'This member has already been rated for this drive',
+      );
+    }
+
     const inserted = await client.query(
       `INSERT INTO trip_ratings (trip_id, member_id, rated_by, overall_score, private_feedback, public_notes)
        VALUES ($1,$2,$3,$4,$5,$6)
@@ -318,6 +357,7 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
     data: { upgradeRequestId: id, decision },
   });
 
+  cachePresets.rating(`upgrade.${decision}`);
   return query(`SELECT * FROM membership_upgrade_requests WHERE id = $1`, [id]).then(
     (r) => r.rows[0],
   );

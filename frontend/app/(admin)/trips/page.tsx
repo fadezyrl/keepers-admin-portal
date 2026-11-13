@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterTripMutation } from "@/lib/invalidate";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useToast } from "@/lib/toast";
 import type { Paginated, Trip } from "@/lib/types";
@@ -18,6 +21,7 @@ const PAGE_SIZE = 20;
 
 export default function TripsPage() {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
@@ -26,22 +30,24 @@ export default function TripsPage() {
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
 
-  const path = useMemo(
-    () =>
-      `/trips${buildQuery({
-        q: debouncedQ.trim() || undefined,
-        status: status || undefined,
-        includeDrafts: true,
-        filter: "all",
-        page,
-        limit: PAGE_SIZE,
-      })}`,
+  const listParams = useMemo(
+    () => ({
+      q: debouncedQ.trim() || undefined,
+      status: status || undefined,
+      includeDrafts: true,
+      filter: "all",
+      page,
+      limit: PAGE_SIZE,
+    }),
     [debouncedQ, status, page],
   );
 
-  const { data, error, loading, refreshing, setData } = useAsync(
-    () => api.get<Paginated<Trip>>(path),
-    [path],
+  const path = useMemo(() => `/trips${buildQuery(listParams)}`, [listParams]);
+
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.trips.list(listParams),
+    (signal) => api.get<Paginated<Trip>>(path, { signal }),
+    { staleTime: stale.operational },
   );
 
   const items = data?.items || [];
@@ -72,6 +78,7 @@ export default function TripsPage() {
           ),
         };
       });
+      await afterTripMutation(queryClient);
       toast.success(`Trip marked ${nextStatus}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update trip");
@@ -223,6 +230,7 @@ export default function TripsPage() {
         onClose={() => setCreateOpen(false)}
         onCreated={(trip) => {
           patchTrip(trip);
+          void afterTripMutation(queryClient);
           setDrawerId(trip.id);
         }}
       />

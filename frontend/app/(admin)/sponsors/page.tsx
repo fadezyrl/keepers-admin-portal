@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterSponsorMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import type { Sponsor } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -16,9 +19,11 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 export default function SponsorsPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, reload, setData } = useAsync(
-    () => api.get<Sponsor[]>("/content/sponsors?activeOnly=false"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.content.sponsors(),
+    (signal) => api.get<Sponsor[]>("/content/sponsors?activeOnly=false", { signal }),
+    { staleTime: stale.content },
   );
   const [rows, setRows] = useState<Sponsor[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -63,7 +68,7 @@ export default function SponsorsPage() {
       });
       toast.success(editing ? "Sponsor updated" : "Sponsor created");
       setDrawerOpen(false);
-      await reload();
+      await afterSponsorMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save sponsor");
     } finally {
@@ -76,6 +81,7 @@ export default function SponsorsPage() {
     try {
       await api.delete(`/content/sponsors/${id}`);
       setData((prev) => (prev || []).filter((s) => s.id !== id));
+      await afterSponsorMutation(queryClient);
       toast.success("Sponsor deleted");
       setDeleteId(null);
     } catch (err) {
@@ -98,10 +104,11 @@ export default function SponsorsPage() {
         orderedIds: next.map((s) => s.id),
       });
       setData(next);
+      await afterSponsorMutation(queryClient);
       toast.success("Order saved");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to reorder");
-      await reload();
+      await afterSponsorMutation(queryClient);
     }
   }
 
@@ -120,6 +127,7 @@ export default function SponsorsPage() {
           row.id === s.id ? { ...row, isActive: s.isActive === false } : row,
         ),
       );
+      await afterSponsorMutation(queryClient);
       toast.success(s.isActive === false ? "Sponsor activated" : "Sponsor deactivated");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update sponsor");

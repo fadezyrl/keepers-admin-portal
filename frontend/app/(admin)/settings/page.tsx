@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterRatingMutation, afterSettingsMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import type { AppSetting, RatingCriterion } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -16,10 +19,17 @@ import { TableSkeleton } from "@/components/ui/Skeleton";
 
 export default function SettingsPage() {
   const toast = useToast();
-  const settings = useAsync(() => api.get<AppSetting[]>("/content/settings"), []);
-  const criteria = useAsync(
-    () => api.get<RatingCriterion[]>("/ratings/criteria?includeInactive=true"),
-    [],
+  const queryClient = useQueryClient();
+  const settings = useAdminQuery(
+    queryKeys.content.settings(),
+    (signal) => api.get<AppSetting[]>("/content/settings", { signal }),
+    { staleTime: stale.settings },
+  );
+  const criteria = useAdminQuery(
+    queryKeys.ratings.criteria(),
+    (signal) =>
+      api.get<RatingCriterion[]>("/ratings/criteria?includeInactive=true", { signal }),
+    { staleTime: stale.settings },
   );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set());
@@ -61,7 +71,7 @@ export default function SettingsPage() {
         delete next[key];
         return next;
       });
-      await settings.reload();
+      await afterSettingsMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save setting");
     } finally {
@@ -115,7 +125,7 @@ export default function SettingsPage() {
       });
       toast.success(editing ? "Criterion updated" : "Criterion created");
       setDrawerOpen(false);
-      await criteria.reload();
+      await afterRatingMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save criterion");
     } finally {
@@ -140,6 +150,7 @@ export default function SettingsPage() {
           row.id === c.id ? { ...row, is_active: c.is_active === false } : row,
         ),
       );
+      await afterRatingMutation(queryClient);
       toast.success(c.is_active === false ? "Criterion activated" : "Criterion deactivated");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update criterion");

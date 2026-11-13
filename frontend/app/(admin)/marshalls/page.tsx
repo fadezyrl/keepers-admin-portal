@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { api, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import type { Member, Paginated } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -14,13 +15,15 @@ import { MemberDrawer } from "@/components/admin/MemberDrawer";
 
 type MarshallRow = Member & { roleLabels: string[] };
 
-async function loadMarshalls() {
+async function loadMarshalls(signal: AbortSignal) {
   const [marshall, pre] = await Promise.all([
     api.get<Paginated<Member>>(
       `/members${buildQuery({ role: "marshall", limit: 100 })}`,
+      { signal },
     ),
     api.get<Paginated<Member>>(
       `/members${buildQuery({ role: "pre_marshall", limit: 100 })}`,
+      { signal },
     ),
   ]);
 
@@ -37,7 +40,11 @@ async function loadMarshalls() {
 }
 
 export default function MarshallsPage() {
-  const { data, error, loading, refreshing } = useAsync(loadMarshalls, []);
+  const { data, error, loading, refreshing } = useAdminQuery(
+    queryKeys.members.marshalls(),
+    loadMarshalls,
+    { staleTime: stale.operational },
+  );
   const [q, setQ] = useState("");
   const debouncedQ = useDebouncedValue(q, 250);
   const [drawerId, setDrawerId] = useState<string | null>(null);

@@ -1,6 +1,7 @@
 const { query } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
+const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 
 function mapEvent(row) {
@@ -91,6 +92,7 @@ async function upsertEvent(payload, actor, req) {
       entityId: payload.id,
       req,
     });
+    cachePresets.events('events.update');
     return mapEvent(updated.rows[0]);
   }
 
@@ -114,6 +116,7 @@ async function upsertEvent(payload, actor, req) {
     entityId: inserted.rows[0].id,
     req,
   });
+  cachePresets.events('events.create');
   return mapEvent(inserted.rows[0]);
 }
 
@@ -137,6 +140,7 @@ async function setEventStatus(id, status, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.events(`events.status.${status}`);
   return mapEvent(updated.rows[0]);
 }
 
@@ -156,6 +160,7 @@ async function deleteEvent(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.events('events.delete');
   return { id, deleted: true };
 }
 

@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterMemberMutation } from "@/lib/invalidate";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useToast } from "@/lib/toast";
 import type { Paginated, Member } from "@/lib/types";
@@ -32,34 +35,41 @@ const MANAGEABLE = ["member", "pre_marshall", "marshall"] as const;
 
 export default function RolesPage() {
   const toast = useToast();
-  const rolesQuery = useAsync(() => api.get<RolesPayload>("/dashboard/roles"), []);
+  const queryClient = useQueryClient();
+  const rolesQuery = useAdminQuery(
+    queryKeys.dashboard.roles(),
+    (signal) => api.get<RolesPayload>("/dashboard/roles", { signal }),
+    { staleTime: stale.list },
+  );
   const [roleFilter, setRoleFilter] = useState("marshall");
-  const membersPath = useMemo(
-    () => `/members${buildQuery({ role: roleFilter, limit: 100 })}`,
+  const membersParams = useMemo(
+    () => ({ role: roleFilter, limit: 100 }),
     [roleFilter],
   );
-  const membersQuery = useAsync(
-    () => api.get<Paginated<Member>>(membersPath),
-    [membersPath],
+  const membersQuery = useAdminQuery(
+    queryKeys.members.list(membersParams),
+    (signal) =>
+      api.get<Paginated<Member>>(`/members${buildQuery(membersParams)}`, { signal }),
+    { staleTime: stale.operational },
   );
 
   const [pickerQ, setPickerQ] = useState("");
   const debouncedPickerQ = useDebouncedValue(pickerQ, 300);
-  const pickerPath = useMemo(
-    () =>
-      `/members${buildQuery({
-        q: debouncedPickerQ.trim() || undefined,
-        status: "approved",
-        limit: 8,
-      })}`,
+  const pickerParams = useMemo(
+    () => ({
+      q: debouncedPickerQ.trim() || undefined,
+      status: "approved",
+      limit: 8,
+    }),
     [debouncedPickerQ],
   );
-  const pickerQuery = useAsync(
-    () =>
+  const pickerQuery = useAdminQuery(
+    queryKeys.members.list(pickerParams),
+    (signal) =>
       debouncedPickerQ.trim().length < 2
         ? Promise.resolve({ items: [], pagination: { page: 1, limit: 8, total: 0 } } as Paginated<Member>)
-        : api.get<Paginated<Member>>(pickerPath),
-    [pickerPath, debouncedPickerQ],
+        : api.get<Paginated<Member>>(`/members${buildQuery(pickerParams)}`, { signal }),
+    { staleTime: stale.operational },
   );
 
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
@@ -80,7 +90,7 @@ export default function RolesPage() {
       toast.success(`Assigned “${assignRole}” to ${selectedMember.name}`);
       setSelectedMember(null);
       setPickerQ("");
-      await membersQuery.reload();
+      await afterMemberMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to assign role");
     } finally {
@@ -106,6 +116,7 @@ export default function RolesPage() {
           },
         };
       });
+      await afterMemberMutation(queryClient);
       toast.success(`Removed “${role}”`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to remove role");

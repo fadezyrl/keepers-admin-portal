@@ -2,6 +2,7 @@ const { query, withTransaction } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
 const { createNotification, notifyMany } = require('./notificationService');
+const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 
 const MEMBERSHIP_RANK = { junior: 0, intermediate: 1, advanced: 2 };
@@ -298,6 +299,7 @@ async function createTrip(payload, actor, req) {
     req,
   });
 
+  cachePresets.trip('trip.create');
   return getTrip(tripId, actor.id);
 }
 
@@ -317,6 +319,25 @@ async function updateTrip(id, payload, actor, req) {
     const code = (payload.requiredMembershipCode || payload.requiredMembership).toLowerCase();
     const level = await query(`SELECT id FROM membership_levels WHERE code = $1`, [code]);
     requiredLevelId = level.rows[0]?.id || null;
+  }
+
+  if (payload.maxParticipants != null) {
+    const nextCap = Number(payload.maxParticipants);
+    if (!Number.isFinite(nextCap) || nextCap < 1) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Capacity must be at least 1');
+    }
+    const occupied = await query(
+      `SELECT COUNT(*)::int AS n FROM trip_registrations
+       WHERE trip_id = $1 AND status IN ('registered', 'pending')`,
+      [id],
+    );
+    if (nextCap < occupied.rows[0].n) {
+      throw new AppError(
+        409,
+        'CAPACITY_TOO_LOW',
+        `Cannot set capacity below current registrations (${occupied.rows[0].n})`,
+      );
+    }
   }
 
   await query(
@@ -386,6 +407,7 @@ async function updateTrip(id, payload, actor, req) {
     req,
   });
 
+  cachePresets.trip('trip.update');
   return getTrip(id, actor.id);
 }
 
@@ -442,6 +464,7 @@ async function setTripStatus(id, status, actor, req, reason) {
     req,
   });
 
+  cachePresets.trip(`trip.status.${status}`);
   return getTrip(id, actor.id);
 }
 
@@ -460,6 +483,7 @@ async function softDeleteTrip(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.trip('trip.delete');
   return { id, deleted: true };
 }
 
@@ -483,70 +507,123 @@ async function getBoolSetting(key, fallback = false) {
 }
 
 async function joinTrip(tripId, user, req) {
-  const trip = await getTripRow(tripId);
-  if (!trip || trip.status !== 'published') {
-    throw new AppError(404, 'NOT_FOUND', 'Trip is not available');
-  }
-
   const profile = user.profile;
   if (!profile || profile.status !== 'approved') {
     throw new AppError(403, 'FORBIDDEN', 'Only approved members can join trips');
   }
 
-  if (!membershipMeets(profile.membership_rank, trip.required_membership_rank)) {
-    throw new AppError(
-      403,
-      'INELIGIBLE_MEMBERSHIP',
-      `Requires ${trip.required_membership_name || 'higher'} membership or above`,
-    );
-  }
-
-  if (profile.completed_trips < trip.min_trips_required) {
-    throw new AppError(
-      403,
-      'INELIGIBLE_TRIPS',
-      `Requires ${trip.min_trips_required} completed trips`,
-    );
-  }
-
-  const existing = await query(
-    `SELECT * FROM trip_registrations WHERE trip_id = $1 AND user_id = $2`,
-    [tripId, user.id],
-  );
-  if (
-    existing.rows[0] &&
-    !['cancelled', 'rejected'].includes(existing.rows[0].status)
-  ) {
-    throw new AppError(409, 'ALREADY_REGISTERED', 'You are already registered for this trip');
-  }
-
   const requiresApproval = await getBoolSetting('trip_join_requires_approval', false);
-  const countRes = await query(
-    `SELECT COUNT(*)::int AS n FROM trip_registrations WHERE trip_id = $1 AND status = 'registered'`,
-    [tripId],
-  );
-  let status = 'registered';
-  if (requiresApproval) {
-    status = 'pending';
-  } else if (countRes.rows[0].n >= trip.max_participants) {
-    status = 'waitlist';
-  }
+  const allowWaitlist = await getBoolSetting('trip_join_allow_waitlist', false);
 
-  let registration;
-  if (existing.rows[0]) {
-    const updated = await query(
-      `UPDATE trip_registrations SET status = $1, registered_at = NOW(), cancelled_at = NULL, updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [status, existing.rows[0].id],
+  const { registration, trip, status } = await withTransaction(async (client) => {
+    const tripRes = await client.query(
+      `SELECT t.*,
+              ml.rank AS required_membership_rank,
+              ml.name AS required_membership_name
+       FROM trips t
+       LEFT JOIN membership_levels ml ON ml.id = t.required_membership_level_id
+       WHERE t.id = $1 AND t.deleted_at IS NULL
+       FOR UPDATE OF t`,
+      [tripId],
     );
-    registration = updated.rows[0];
-  } else {
-    const inserted = await query(
-      `INSERT INTO trip_registrations (trip_id, user_id, status) VALUES ($1,$2,$3) RETURNING *`,
-      [tripId, user.id, status],
+    const trip = tripRes.rows[0];
+    if (!trip) {
+      throw new AppError(404, 'NOT_FOUND', 'Trip is not available');
+    }
+    if (trip.status !== 'published') {
+      throw new AppError(
+        409,
+        'TRIP_CLOSED',
+        'This trip is not open for registration',
+      );
+    }
+    // Past-dated published trips cannot accept new joins
+    const todayRes = await client.query(`SELECT CURRENT_DATE AS today`);
+    const today = todayRes.rows[0].today;
+    if (trip.trip_date < today) {
+      throw new AppError(409, 'TRIP_EXPIRED', 'This trip has already taken place');
+    }
+
+    if (!membershipMeets(profile.membership_rank, trip.required_membership_rank)) {
+      throw new AppError(
+        403,
+        'INELIGIBLE_MEMBERSHIP',
+        `Requires ${trip.required_membership_name || 'higher'} membership or above`,
+      );
+    }
+
+    if (profile.completed_trips < trip.min_trips_required) {
+      throw new AppError(
+        403,
+        'INELIGIBLE_TRIPS',
+        `Requires ${trip.min_trips_required} completed trips`,
+      );
+    }
+
+    const existing = await client.query(
+      `SELECT * FROM trip_registrations
+       WHERE trip_id = $1 AND user_id = $2
+       FOR UPDATE`,
+      [tripId, user.id],
     );
-    registration = inserted.rows[0];
-  }
+    if (
+      existing.rows[0] &&
+      !['cancelled', 'rejected'].includes(existing.rows[0].status)
+    ) {
+      throw new AppError(
+        409,
+        'ALREADY_REGISTERED',
+        'You are already registered for this trip',
+      );
+    }
+
+    // Hold seats for both confirmed and pending approvals so concurrent joins cannot overbook
+    const countRes = await client.query(
+      `SELECT COUNT(*)::int AS n FROM trip_registrations
+       WHERE trip_id = $1 AND status IN ('registered', 'pending')`,
+      [tripId],
+    );
+    const occupied = countRes.rows[0].n;
+
+    let status = 'registered';
+    if (requiresApproval) {
+      if (occupied >= trip.max_participants) {
+        if (allowWaitlist) {
+          status = 'waitlist';
+        } else {
+          throw new AppError(409, 'TRIP_FULL', 'This trip is full');
+        }
+      } else {
+        status = 'pending';
+      }
+    } else if (occupied >= trip.max_participants) {
+      if (allowWaitlist) {
+        status = 'waitlist';
+      } else {
+        throw new AppError(409, 'TRIP_FULL', 'This trip is full');
+      }
+    }
+
+    let registration;
+    if (existing.rows[0]) {
+      const updated = await client.query(
+        `UPDATE trip_registrations
+         SET status = $1, registered_at = NOW(), cancelled_at = NULL, updated_at = NOW()
+         WHERE id = $2 RETURNING *`,
+        [status, existing.rows[0].id],
+      );
+      registration = updated.rows[0];
+    } else {
+      const inserted = await client.query(
+        `INSERT INTO trip_registrations (trip_id, user_id, status)
+         VALUES ($1,$2,$3) RETURNING *`,
+        [tripId, user.id, status],
+      );
+      registration = inserted.rows[0];
+    }
+
+    return { registration, trip, status };
+  });
 
   await writeAudit({
     actorId: user.id,
@@ -571,52 +648,78 @@ async function joinTrip(tripId, user, req) {
 }
 
 async function cancelRegistration(tripId, user, req) {
-  const existing = await query(
-    `SELECT * FROM trip_registrations WHERE trip_id = $1 AND user_id = $2 AND status IN ('registered','waitlist')`,
-    [tripId, user.id],
-  );
-  if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Registration not found');
-
-  await query(
-    `UPDATE trip_registrations SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW() WHERE id = $1`,
-    [existing.rows[0].id],
-  );
-
-  // Promote waitlist if a seat opened
-  const trip = await getTripRow(tripId);
-  if (trip) {
-    const countRes = await query(
-      `SELECT COUNT(*)::int AS n FROM trip_registrations WHERE trip_id = $1 AND status = 'registered'`,
-      [tripId],
+  const { cancelled, promoted } = await withTransaction(async (client) => {
+    const existing = await client.query(
+      `SELECT * FROM trip_registrations
+       WHERE trip_id = $1 AND user_id = $2
+         AND status IN ('registered','waitlist','pending')
+       FOR UPDATE`,
+      [tripId, user.id],
     );
-    if (countRes.rows[0].n < trip.max_participants) {
-      const next = await query(
-        `SELECT * FROM trip_registrations
-         WHERE trip_id = $1 AND status = 'waitlist'
-         ORDER BY registered_at ASC LIMIT 1`,
+    if (!existing.rows[0]) {
+      throw new AppError(404, 'NOT_FOUND', 'Registration not found');
+    }
+
+    const wasHoldingSeat = ['registered', 'pending'].includes(existing.rows[0].status);
+
+    await client.query(
+      `UPDATE trip_registrations
+       SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [existing.rows[0].id],
+    );
+
+    let promoted = null;
+    if (wasHoldingSeat) {
+      const tripRes = await client.query(
+        `SELECT * FROM trips WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
         [tripId],
       );
-      if (next.rows[0]) {
-        await query(
-          `UPDATE trip_registrations SET status = 'registered', updated_at = NOW() WHERE id = $1`,
-          [next.rows[0].id],
+      const trip = tripRes.rows[0];
+      if (trip) {
+        const countRes = await client.query(
+          `SELECT COUNT(*)::int AS n FROM trip_registrations
+           WHERE trip_id = $1 AND status IN ('registered', 'pending')`,
+          [tripId],
         );
-        await createNotification({
-          userId: next.rows[0].user_id,
-          type: 'registration',
-          title: 'Waitlist promoted',
-          body: `A seat opened for ${trip.title}. You are now registered.`,
-          data: { tripId },
-        });
+        if (countRes.rows[0].n < trip.max_participants) {
+          const next = await client.query(
+            `SELECT * FROM trip_registrations
+             WHERE trip_id = $1 AND status = 'waitlist'
+             ORDER BY registered_at ASC NULLS LAST, created_at ASC
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED`,
+            [tripId],
+          );
+          if (next.rows[0]) {
+            await client.query(
+              `UPDATE trip_registrations SET status = 'registered', updated_at = NOW() WHERE id = $1`,
+              [next.rows[0].id],
+            );
+            promoted = { userId: next.rows[0].user_id, tripTitle: trip.title };
+          }
+        }
       }
     }
+
+    return { cancelled: existing.rows[0], promoted };
+  });
+
+  if (promoted) {
+    await createNotification({
+      userId: promoted.userId,
+      type: 'registration',
+      title: 'Waitlist promoted',
+      body: `A seat opened for ${promoted.tripTitle}. You are now registered.`,
+      data: { tripId },
+    });
   }
 
   await writeAudit({
     actorId: user.id,
     action: 'trip.cancel_registration',
     entityType: 'trip_registrations',
-    entityId: existing.rows[0].id,
+    entityId: cancelled.id,
     metadata: { tripId },
     req,
   });
@@ -633,7 +736,12 @@ async function markAttendance(tripId, { userId, attended = true, notes }, actor,
   if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
 
   const canManageAll = hasPermission(actor, 'trips.manage');
-  if (!canManageAll && trip.organizer_id !== actor.id && !hasPermission(actor, 'attendance.mark')) {
+  const isOrganizer = trip.organizer_id === actor.id;
+  const canManageOwn = hasPermission(actor, 'trips.manage_own') && isOrganizer;
+
+  // Only admins (trips.manage) or the drive organizer with manage_own may mark attendance.
+  // Holding attendance.mark alone (e.g. legacy Pre-Marshall grants) is not enough.
+  if (!canManageAll && !canManageOwn) {
     throw new AppError(403, 'FORBIDDEN', 'Not authorized for this trip');
   }
 
@@ -641,6 +749,13 @@ async function markAttendance(tripId, { userId, attended = true, notes }, actor,
     `SELECT id FROM trip_registrations WHERE trip_id = $1 AND user_id = $2 AND status = 'registered'`,
     [tripId, userId],
   );
+  if (!reg.rows[0]) {
+    throw new AppError(
+      400,
+      'NOT_REGISTERED',
+      'Member must be a registered participant before attendance can be marked',
+    );
+  }
 
   const result = await query(
     `INSERT INTO trip_attendance (trip_id, user_id, registration_id, attended, marked_by, notes)
@@ -652,7 +767,7 @@ async function markAttendance(tripId, { userId, attended = true, notes }, actor,
        marked_at = NOW(),
        updated_at = NOW()
      RETURNING *`,
-    [tripId, userId, reg.rows[0]?.id || null, attended, actor.id, notes || null],
+    [tripId, userId, reg.rows[0].id, attended, actor.id, notes || null],
   );
 
   await writeAudit({
@@ -818,36 +933,81 @@ async function reviewRegistration(registrationId, payload, actor, req) {
     throw new AppError(400, 'INVALID_STATUS', 'Invalid registration status');
   }
 
-  const existing = await query(`SELECT * FROM trip_registrations WHERE id = $1`, [
-    registrationId,
-  ]);
-  if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Registration not found');
-  const row = existing.rows[0];
-
-  if (nextStatus === 'registered') {
-    const trip = await getTripRow(row.trip_id);
-    const countRes = await query(
-      `SELECT COUNT(*)::int AS n FROM trip_registrations
-       WHERE trip_id = $1 AND status = 'registered' AND id <> $2`,
-      [row.trip_id, registrationId],
+  const { updated, row, promoted, tripTitle } = await withTransaction(async (client) => {
+    const existing = await client.query(
+      `SELECT * FROM trip_registrations WHERE id = $1 FOR UPDATE`,
+      [registrationId],
     );
-    if (trip && countRes.rows[0].n >= trip.max_participants) {
-      throw new AppError(409, 'TRIP_FULL', 'Trip is full — move to waitlist instead');
-    }
-  }
+    if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Registration not found');
+    const row = existing.rows[0];
 
-  const updated = await query(
-    `UPDATE trip_registrations SET
-       status = $1,
-       notes = COALESCE($2, notes),
-       reviewed_by = $3,
-       reviewed_at = NOW(),
-       cancelled_at = CASE WHEN $1 = 'cancelled' THEN NOW() ELSE cancelled_at END,
-       updated_at = NOW()
-     WHERE id = $4
-     RETURNING *`,
-    [nextStatus, payload.notes || null, actor.id, registrationId],
-  );
+    const tripRes = await client.query(
+      `SELECT * FROM trips WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [row.trip_id],
+    );
+    const trip = tripRes.rows[0];
+
+    if (nextStatus === 'registered') {
+      const countRes = await client.query(
+        `SELECT COUNT(*)::int AS n FROM trip_registrations
+         WHERE trip_id = $1 AND status IN ('registered', 'pending') AND id <> $2`,
+        [row.trip_id, registrationId],
+      );
+      if (trip && countRes.rows[0].n >= trip.max_participants) {
+        throw new AppError(409, 'TRIP_FULL', 'Trip is full — move to waitlist instead');
+      }
+    }
+
+    const updatedRes = await client.query(
+      `UPDATE trip_registrations SET
+         status = $1,
+         notes = COALESCE($2, notes),
+         reviewed_by = $3,
+         reviewed_at = NOW(),
+         cancelled_at = CASE WHEN $1 = 'cancelled' THEN NOW() ELSE cancelled_at END,
+         updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [nextStatus, payload.notes || null, actor.id, registrationId],
+    );
+
+    let promoted = null;
+    if (
+      ['cancelled', 'rejected'].includes(nextStatus) &&
+      ['registered', 'pending'].includes(row.status) &&
+      trip
+    ) {
+      const countRes = await client.query(
+        `SELECT COUNT(*)::int AS n FROM trip_registrations
+         WHERE trip_id = $1 AND status IN ('registered', 'pending')`,
+        [row.trip_id],
+      );
+      if (countRes.rows[0].n < trip.max_participants) {
+        const next = await client.query(
+          `SELECT * FROM trip_registrations
+           WHERE trip_id = $1 AND status = 'waitlist'
+           ORDER BY registered_at ASC NULLS LAST, created_at ASC
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED`,
+          [row.trip_id],
+        );
+        if (next.rows[0]) {
+          await client.query(
+            `UPDATE trip_registrations SET status = 'registered', updated_at = NOW() WHERE id = $1`,
+            [next.rows[0].id],
+          );
+          promoted = next.rows[0];
+        }
+      }
+    }
+
+    return {
+      updated: updatedRes.rows[0],
+      row,
+      promoted,
+      tripTitle: trip?.title || 'this trip',
+    };
+  });
 
   await writeAudit({
     actorId: actor.id,
@@ -866,38 +1026,16 @@ async function reviewRegistration(registrationId, payload, actor, req) {
     data: { tripId: row.trip_id, status: nextStatus },
   });
 
-  // If a registered seat was cancelled/rejected, promote waitlist
-  if (['cancelled', 'rejected'].includes(nextStatus) && row.status === 'registered') {
-    const trip = await getTripRow(row.trip_id);
-    if (trip) {
-      const countRes = await query(
-        `SELECT COUNT(*)::int AS n FROM trip_registrations WHERE trip_id = $1 AND status = 'registered'`,
-        [row.trip_id],
-      );
-      if (countRes.rows[0].n < trip.max_participants) {
-        const next = await query(
-          `SELECT * FROM trip_registrations
-           WHERE trip_id = $1 AND status = 'waitlist'
-           ORDER BY registered_at ASC NULLS LAST, created_at ASC
-           LIMIT 1`,
-          [row.trip_id],
-        );
-        if (next.rows[0]) {
-          await query(
-            `UPDATE trip_registrations SET status = 'registered', updated_at = NOW() WHERE id = $1`,
-            [next.rows[0].id],
-          );
-          await createNotification({
-            userId: next.rows[0].user_id,
-            type: 'registration',
-            title: 'Waitlist promoted',
-            body: `A seat opened — you are now registered for ${trip.title}.`,
-            data: { tripId: row.trip_id, status: 'registered' },
-          });
-        }
-      }
-    }
+  if (promoted) {
+    await createNotification({
+      userId: promoted.user_id,
+      type: 'registration',
+      title: 'Waitlist promoted',
+      body: `A seat opened — you are now registered for ${tripTitle}.`,
+      data: { tripId: row.trip_id, status: 'registered' },
+    });
   }
 
-  return updated.rows[0];
+  cachePresets.registration('registration.review');
+  return updated;
 }

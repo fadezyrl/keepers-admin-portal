@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterMemberMutation } from "@/lib/invalidate";
 import { formatDate, formatDateTime } from "@/lib/format";
 import type { Member, MemberDetail } from "@/lib/types";
 import { useToast } from "@/lib/toast";
@@ -23,39 +27,22 @@ export function MemberDrawer({
   onUpdated?: (member: Member) => void;
 }) {
   const toast = useToast();
-  const [data, setData] = useState<MemberDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (!open || !memberId) {
-      setData(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void api
-      .get<MemberDetail>(`/members/${memberId}`)
-      .then((result) => {
-        if (!cancelled) setData(result);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof ApiError ? err.message : "Failed to load member");
-          setData(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, memberId]);
+  const active = open && Boolean(memberId);
+  const query = useAdminQuery(
+    queryKeys.members.detail(memberId ?? ""),
+    (signal) => api.get<MemberDetail>(`/members/${memberId}`, { signal }),
+    { staleTime: stale.operational, enabled: active },
+  );
+  const setData = query.setData;
+
+  // Previous-data placeholders must not leak another member into the drawer.
+  const data = active && query.data?.id === memberId ? query.data : null;
+  const error = active ? query.error : null;
+  const loading = active && !data && !error;
 
   async function setStatus(status: string) {
     if (!memberId || !data) return;
@@ -86,6 +73,7 @@ export function MemberDrawer({
         vehicle: next.vehicle,
         createdAt: next.createdAt,
       });
+      await afterMemberMutation(queryClient);
       toast.success(`Member marked ${status}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update status");

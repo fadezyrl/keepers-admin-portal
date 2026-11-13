@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterDocumentMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import type { DocumentRow } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
@@ -16,9 +19,11 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 
 export default function DocumentsPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, setData } = useAsync(
-    () => api.get<DocumentRow[]>("/content/documents"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.content.documents(),
+    (signal) => api.get<DocumentRow[]>("/content/documents", { signal }),
+    { staleTime: stale.content },
   );
   const [editing, setEditing] = useState<DocumentRow | null>(null);
   const [title, setTitle] = useState("");
@@ -56,6 +61,7 @@ export default function DocumentsPage() {
             : d,
         ),
       );
+      await afterDocumentMutation(queryClient);
       toast.success("Document saved");
       setEditing(null);
     } catch (err) {

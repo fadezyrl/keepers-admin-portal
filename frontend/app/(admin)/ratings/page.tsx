@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterRatingMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import type { RatingRow, UpgradeRequest } from "@/lib/types";
 import { displayName, formatDateTime } from "@/lib/format";
@@ -17,10 +20,17 @@ import { TripQuickDrawer } from "@/components/admin/TripDrawer";
 
 export default function RatingsPage() {
   const toast = useToast();
-  const ratings = useAsync(() => api.get<RatingRow[]>("/ratings"), []);
-  const upgrades = useAsync(
-    () => api.get<UpgradeRequest[]>("/ratings/upgrades?status=pending"),
-    [],
+  const queryClient = useQueryClient();
+  const ratings = useAdminQuery(
+    queryKeys.ratings.list(),
+    (signal) => api.get<RatingRow[]>("/ratings", { signal }),
+    { staleTime: stale.list },
+  );
+  const upgrades = useAdminQuery(
+    queryKeys.ratings.upgrades("pending"),
+    (signal) =>
+      api.get<UpgradeRequest[]>("/ratings/upgrades?status=pending", { signal }),
+    { staleTime: stale.operational },
   );
   const [activeUpgrade, setActiveUpgrade] = useState<UpgradeRequest | null>(null);
   const [notes, setNotes] = useState("");
@@ -40,6 +50,7 @@ export default function RatingsPage() {
       });
       upgrades.setData((prev) => (prev || []).filter((u) => u.id !== id));
       if (activeUpgrade?.id === id) setActiveUpgrade(null);
+      await afterRatingMutation(queryClient);
       toast.success(`Upgrade request ${decision}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Review failed");

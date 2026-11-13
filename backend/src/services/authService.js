@@ -392,8 +392,13 @@ async function deleteAccount(userId, email, currentPassword, req) {
     await client.query(`DELETE FROM notifications WHERE user_id = $1`, [userId]);
     await client.query(`DELETE FROM user_roles WHERE user_id = $1`, [userId]);
     await client.query(
-      `UPDATE trip_registrations SET status = 'cancelled', cancelled_at = NOW()
-       WHERE user_id = $1 AND status IN ('registered', 'waitlist')`,
+      `UPDATE trip_registrations SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+       WHERE user_id = $1 AND status IN ('registered', 'waitlist', 'pending')`,
+      [userId],
+    );
+    await client.query(
+      `UPDATE membership_upgrade_requests SET status = 'withdrawn', updated_at = NOW()
+       WHERE member_id = $1 AND status = 'pending'`,
       [userId],
     );
     await client.query(

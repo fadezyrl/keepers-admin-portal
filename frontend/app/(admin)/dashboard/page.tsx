@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
 import type { DashboardStats } from "@/lib/types";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -13,9 +14,10 @@ import { TableSkeleton } from "@/components/ui/Skeleton";
 import { TripQuickDrawer } from "@/components/admin/TripDrawer";
 
 export default function DashboardPage() {
-  const { data, error, loading } = useAsync(
-    () => api.get<DashboardStats>("/dashboard/stats"),
-    [],
+  const { data, error, loading, refreshing } = useAdminQuery(
+    queryKeys.dashboard.stats(),
+    (signal) => api.get<DashboardStats>("/dashboard/stats", { signal }),
+    { staleTime: stale.operational },
   );
   const [tripId, setTripId] = useState<string | null>(null);
 
@@ -27,7 +29,7 @@ export default function DashboardPage() {
       </div>
     );
   }
-  if (error) return <ErrorBlock message={error} />;
+  if (error && !data) return <ErrorBlock message={error} />;
   if (!data) return <EmptyBlock title="No dashboard data" />;
 
   const totals = data.totals;
@@ -42,10 +44,10 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div>
+    <div className={refreshing ? "table-refreshing" : undefined}>
       <PageHeader
         title="Dashboard"
-        subtitle="Live club pulse from the Keepers API — open queues and trips without extra navigation."
+        subtitle="Live club pulse — cached between visits, refreshed in the background."
       />
 
       <div className="grid gap-px bg-[var(--keepers-line)] sm:grid-cols-2 lg:grid-cols-4">

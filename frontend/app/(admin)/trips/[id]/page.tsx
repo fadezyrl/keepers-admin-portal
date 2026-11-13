@@ -3,8 +3,11 @@
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterTripMutation } from "@/lib/invalidate";
 import type { Trip } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -15,9 +18,11 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 function TripDetailInner() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  const { data, error, loading, reload } = useAsync(
-    () => api.get<Trip>(`/trips/${id}`),
-    [id],
+  const queryClient = useQueryClient();
+  const { data, error, loading } = useAdminQuery(
+    queryKeys.trips.detail(id),
+    (signal) => api.get<Trip>(`/trips/${id}`, { signal }),
+    { staleTime: stale.operational },
   );
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -32,7 +37,7 @@ function TripDetailInner() {
     try {
       await api.post(`/trips/${id}/status`, { status, reason: reason || undefined });
       setMessage(`Trip marked ${status}`);
-      await reload();
+      await afterTripMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to update trip");
     } finally {
@@ -46,7 +51,7 @@ function TripDetailInner() {
     try {
       await api.post(`/trips/${id}/attendance`, { userId, attended });
       setMessage(attended ? "Attendance marked" : "Marked not attended");
-      await reload();
+      await afterTripMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to record attendance");
     } finally {
@@ -70,7 +75,7 @@ function TripDetailInner() {
         coverImage: coverImage.trim() || String(fd.get("coverImage") || data.coverImage || "") || undefined,
       });
       setMessage("Trip updated");
-      await reload();
+      await afterTripMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to save trip");
     } finally {
@@ -90,7 +95,7 @@ function TripDetailInner() {
       });
       setMediaUrl("");
       setMessage(mediaType === "video" ? "Video attached" : "Image attached");
-      await reload();
+      await afterTripMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to attach media");
     } finally {

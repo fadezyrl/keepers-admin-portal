@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterEventMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -35,9 +38,11 @@ const empty = {
 
 export default function EventsPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, reload, setData } = useAsync(
-    () => api.get<ClubEvent[]>("/events?includeUnpublished=true"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.events.list(),
+    (signal) => api.get<ClubEvent[]>("/events?includeUnpublished=true", { signal }),
+    { staleTime: stale.content },
   );
   const [form, setForm] = useState(empty);
   const [editId, setEditId] = useState<string | null>(null);
@@ -74,11 +79,12 @@ export default function EventsPage() {
         setData((prev) =>
           (prev || []).map((ev) => (ev.id === editId ? { ...ev, ...form } : ev)),
         );
+        await afterEventMutation(queryClient);
         toast.success("Event updated");
       } else {
         await api.post("/events", form);
+        await afterEventMutation(queryClient);
         toast.success("Event created");
-        await reload();
       }
       setDrawerOpen(false);
       setForm(empty);
@@ -97,6 +103,7 @@ export default function EventsPage() {
       setData((prev) =>
         (prev || []).map((ev) => (ev.id === id ? { ...ev, status } : ev)),
       );
+      await afterEventMutation(queryClient);
       toast.success(`Event marked ${status}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update status");
@@ -114,6 +121,7 @@ export default function EventsPage() {
     try {
       await api.delete(`/events/${id}`);
       setData((prev) => (prev || []).filter((ev) => ev.id !== id));
+      await afterEventMutation(queryClient);
       toast.success("Event deleted");
       setDeleteId(null);
       if (editId === id) setDrawerOpen(false);

@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterAnnouncementMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import type { Announcement } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
@@ -15,9 +18,11 @@ import { FormField } from "@/components/ui/FormField";
 
 export default function AnnouncementsPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, reload, setData } = useAsync(
-    () => api.get<Announcement[]>("/content/announcements"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.content.announcements(),
+    (signal) => api.get<Announcement[]>("/content/announcements", { signal }),
+    { staleTime: stale.content },
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [active, setActive] = useState<Announcement | null>(null);
@@ -46,7 +51,7 @@ export default function AnnouncementsPage() {
       });
       toast.success(publish ? "Announcement published" : "Draft announcement created");
       setDrawerOpen(false);
-      await reload();
+      await afterAnnouncementMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to create announcement");
     } finally {
@@ -66,6 +71,7 @@ export default function AnnouncementsPage() {
       if (active?.id === id) {
         setActive({ ...active, status: "published", published_at: new Date().toISOString() });
       }
+      await afterAnnouncementMutation(queryClient);
       toast.success("Announcement published");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to publish");

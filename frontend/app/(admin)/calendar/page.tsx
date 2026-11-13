@@ -14,7 +14,8 @@ import {
   startOfWeek,
 } from "date-fns";
 import { api, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
 import type { Paginated, Trip } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
@@ -30,12 +31,14 @@ export default function CalendarPage() {
   const from = format(startOfMonth(cursor), "yyyy-MM-dd");
   const to = format(endOfMonth(cursor), "yyyy-MM-dd");
 
-  const { data, error, loading, refreshing } = useAsync(
-    () =>
+  const { data, error, loading, refreshing } = useAdminQuery(
+    queryKeys.trips.calendar(from, to),
+    (signal) =>
       api.get<Paginated<Trip>>(
         `/trips/calendar${buildQuery({ from, to, includeDrafts: true })}`,
+        { signal },
       ),
-    [from, to],
+    { staleTime: stale.operational },
   );
 
   const tripsByDay = useMemo(() => {

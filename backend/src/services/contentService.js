@@ -2,6 +2,7 @@ const { query } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
 const { notifyMany } = require('./notificationService');
+const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 const { getAdminClient } = require('../config/supabase');
 
@@ -49,6 +50,7 @@ async function upsertSponsor(payload, actor, req) {
       ],
     );
     if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Sponsor not found');
+    cachePresets.sponsors('sponsor.update');
     return updated.rows[0];
   }
 
@@ -72,6 +74,7 @@ async function upsertSponsor(payload, actor, req) {
     entityId: inserted.rows[0].id,
     req,
   });
+  cachePresets.sponsors('sponsor.create');
   return inserted.rows[0];
 }
 
@@ -96,6 +99,7 @@ async function reorderSponsors(orderedIds, actor, req) {
     metadata: { count: orderedIds.length },
     req,
   });
+  cachePresets.sponsors('sponsors.reorder');
   return listSponsors({ activeOnly: false });
 }
 
@@ -114,6 +118,7 @@ async function deleteSponsor(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.sponsors('sponsor.delete');
   return { id, deleted: true };
 }
 
@@ -173,6 +178,7 @@ async function upsertHeroSlide(payload, actor, req) {
       entityId: payload.id,
       req,
     });
+    cachePresets.carousel('hero_slides.update');
     return updated.rows[0];
   }
 
@@ -197,6 +203,7 @@ async function upsertHeroSlide(payload, actor, req) {
     entityId: inserted.rows[0].id,
     req,
   });
+  cachePresets.carousel('hero_slides.create');
   return inserted.rows[0];
 }
 
@@ -216,6 +223,7 @@ async function deleteHeroSlide(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.carousel('hero_slides.deactivate');
   return { id, deleted: true };
 }
 
@@ -272,6 +280,7 @@ async function upsertGalleryItem(payload, actor, req) {
       entityId: payload.id,
       req,
     });
+    cachePresets.gallery('gallery_items.update');
     return updated.rows[0];
   }
 
@@ -295,6 +304,7 @@ async function upsertGalleryItem(payload, actor, req) {
     entityId: inserted.rows[0].id,
     req,
   });
+  cachePresets.gallery('gallery_items.create');
   return inserted.rows[0];
 }
 
@@ -314,6 +324,7 @@ async function deleteGalleryItem(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.gallery('gallery_items.delete');
   return { id, deleted: true };
 }
 
@@ -362,6 +373,7 @@ async function updateDocument(slug, payload, actor, req) {
     entityId: updated.rows[0].id,
     req,
   });
+  cachePresets.documents('document.update');
   return updated.rows[0];
 }
 
@@ -417,6 +429,7 @@ async function createAnnouncement(payload, actor, req) {
     req,
   });
 
+  cachePresets.announcements('announcement.create');
   return announcement;
 }
 
@@ -440,6 +453,7 @@ async function publishAnnouncement(id, actor, req) {
     entityId: id,
     req,
   });
+  cachePresets.announcements('announcement.publish');
   return updated.rows[0];
 }
 
@@ -634,6 +648,7 @@ async function updateSetting(key, value, actor, req) {
     [JSON.stringify(value), actor.id, key],
   );
   if (!updated.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Setting not found');
+  cachePresets.settings('settings.update');
   await writeAudit({
     actorId: actor.id,
     action: 'settings.update',

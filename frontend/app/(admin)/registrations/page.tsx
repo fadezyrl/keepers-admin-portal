@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, buildQuery } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterRegistrationMutation } from "@/lib/invalidate";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useSelection } from "@/lib/useSelection";
 import { useToast } from "@/lib/toast";
@@ -41,6 +44,7 @@ const PAGE_SIZE = 20;
 
 export default function RegistrationsPage() {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -52,20 +56,25 @@ export default function RegistrationsPage() {
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  const path = useMemo(
-    () =>
-      `/trips/registrations${buildQuery({
-        status: status === "all" ? undefined : status,
-        q: debouncedQ.trim() || undefined,
-        page,
-        limit: PAGE_SIZE,
-      })}`,
+  const listParams = useMemo(
+    () => ({
+      status: status === "all" ? undefined : status,
+      q: debouncedQ.trim() || undefined,
+      page,
+      limit: PAGE_SIZE,
+    }),
     [status, debouncedQ, page],
   );
 
-  const { data, error, loading, refreshing, setData } = useAsync(
-    () => api.get<RegistrationList>(path),
-    [path],
+  const path = useMemo(
+    () => `/trips/registrations${buildQuery(listParams)}`,
+    [listParams],
+  );
+
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.registrations.list(listParams),
+    (signal) => api.get<RegistrationList>(path, { signal }),
+    { staleTime: stale.operational },
   );
 
   const items = data?.items || [];
@@ -89,6 +98,7 @@ export default function RegistrationsPage() {
     try {
       await api.post(`/trips/registrations/${id}/review`, { status: next });
       patchRow(id, next);
+      await afterRegistrationMutation(queryClient);
       toast.success(`Registration marked ${next}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update registration");
@@ -118,6 +128,7 @@ export default function RegistrationsPage() {
     clear();
     setBulkStatus(null);
     setBulkBusy(false);
+    await afterRegistrationMutation(queryClient);
     toast.push(
       `Bulk update: ${ok} succeeded${fail ? `, ${fail} failed` : ""}`,
       fail ? "danger" : "success",

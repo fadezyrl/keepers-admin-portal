@@ -3,8 +3,11 @@
 import { FormEvent, Suspense, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterMemberMutation } from "@/lib/invalidate";
 import type { MemberDetail } from "@/lib/types";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -15,9 +18,11 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 function MemberDetailInner() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  const { data, error, loading, reload } = useAsync(
-    () => api.get<MemberDetail>(`/members/${id}`),
-    [id],
+  const queryClient = useQueryClient();
+  const { data, error, loading } = useAdminQuery(
+    queryKeys.members.detail(id),
+    (signal) => api.get<MemberDetail>(`/members/${id}`, { signal }),
+    { staleTime: stale.operational },
   );
   const [reason, setReason] = useState("");
   const [role, setRole] = useState("marshall");
@@ -31,7 +36,7 @@ function MemberDetailInner() {
       await api.post(`/members/${id}/status`, { status, reason: reason || undefined });
       setMessage(`Status updated to ${status}`);
       setReason("");
-      await reload();
+      await afterMemberMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to update status");
     } finally {
@@ -46,7 +51,7 @@ function MemberDetailInner() {
     try {
       await api.post(`/members/${id}/roles`, { role });
       setMessage(`Role “${role}” assigned`);
-      await reload();
+      await afterMemberMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to assign role");
     } finally {
@@ -60,7 +65,7 @@ function MemberDetailInner() {
     try {
       await api.delete(`/members/${id}/roles/${code}`);
       setMessage(`Role “${code}” removed`);
-      await reload();
+      await afterMemberMutation(queryClient);
     } catch (err) {
       setMessage(err instanceof ApiError ? err.message : "Failed to remove role");
     } finally {

@@ -1,8 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterCarouselMutation } from "@/lib/invalidate";
 import { useToast } from "@/lib/toast";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyBlock, ErrorBlock } from "@/components/ui/StateBlock";
@@ -25,9 +28,11 @@ type HeroSlide = {
 
 export default function CarouselPage() {
   const toast = useToast();
-  const { data, error, loading, refreshing, reload, setData } = useAsync(
-    () => api.get<HeroSlide[]>("/content/hero-slides?activeOnly=false"),
-    [],
+  const queryClient = useQueryClient();
+  const { data, error, loading, refreshing, setData } = useAdminQuery(
+    queryKeys.content.carousel(),
+    (signal) => api.get<HeroSlide[]>("/content/hero-slides?activeOnly=false", { signal }),
+    { staleTime: stale.content },
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [active, setActive] = useState<HeroSlide | null>(null);
@@ -55,7 +60,7 @@ export default function CarouselPage() {
       setSubtitle("");
       setImage("");
       setOrder("0");
-      await reload();
+      await afterCarouselMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save slide");
     } finally {
@@ -72,6 +77,7 @@ export default function CarouselPage() {
           slide.id === id ? { ...slide, isActive: false } : slide,
         ),
       );
+      await afterCarouselMutation(queryClient);
       toast.success("Slide deactivated");
       setDeleteId(null);
       if (active?.id === id) setActive((prev) => (prev ? { ...prev, isActive: false } : prev));

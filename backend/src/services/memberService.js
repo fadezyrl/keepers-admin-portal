@@ -2,6 +2,7 @@ const { query, withTransaction } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
 const { createNotification } = require('./notificationService');
+const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 
 function membershipLabel(row) {
@@ -354,6 +355,7 @@ async function setMemberStatus(memberId, { status, reason }, actor, req) {
     data: { status },
   });
 
+  cachePresets.member(`member.status.${status}`);
   return getMemberById(memberId, actor);
 }
 

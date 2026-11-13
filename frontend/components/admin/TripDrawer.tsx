@@ -1,8 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
+import { useAdminQuery } from "@/lib/useAdminQuery";
+import { queryKeys, stale } from "@/lib/queryKeys";
+import { afterTripMutation } from "@/lib/invalidate";
 import { formatDate } from "@/lib/format";
 import type { Trip } from "@/lib/types";
 import { useToast } from "@/lib/toast";
@@ -188,9 +192,7 @@ export function TripQuickDrawer({
   onUpdated?: (trip: Trip) => void;
 }) {
   const toast = useToast();
-  const [data, setData] = useState<Trip | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState({
     title: "",
@@ -199,42 +201,36 @@ export function TripQuickDrawer({
     description: "",
     coverImage: "",
   });
+  const hydratedFor = useRef<string | null>(null);
+
+  const active = open && Boolean(tripId);
+  const query = useAdminQuery(
+    queryKeys.trips.detail(tripId ?? ""),
+    (signal) => api.get<Trip>(`/trips/${tripId}`, { signal }),
+    { staleTime: stale.operational, enabled: active },
+  );
+  const setData = query.setData;
+
+  // Previous-data placeholders must not leak another trip into the drawer.
+  const data = active && query.data?.id === tripId ? query.data : null;
+  const error = active ? query.error : null;
+  const loading = active && !data && !error;
 
   useEffect(() => {
-    if (!open || !tripId) {
-      setData(null);
-      setError(null);
+    if (!data) {
+      if (!active) hydratedFor.current = null;
       return;
     }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void api
-      .get<Trip>(`/trips/${tripId}`)
-      .then((result) => {
-        if (cancelled) return;
-        setData(result);
-        setEdit({
-          title: result.title || "",
-          destination: result.destination || "",
-          meetingPoint: result.meetingPoint || "",
-          description: result.description || "",
-          coverImage: result.coverImage || "",
-        });
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof ApiError ? err.message : "Failed to load trip");
-          setData(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, tripId]);
+    if (hydratedFor.current === data.id) return;
+    hydratedFor.current = data.id;
+    setEdit({
+      title: data.title || "",
+      destination: data.destination || "",
+      meetingPoint: data.meetingPoint || "",
+      description: data.description || "",
+      coverImage: data.coverImage || "",
+    });
+  }, [data, active]);
 
   async function setStatus(status: string) {
     if (!tripId) return;
@@ -248,6 +244,7 @@ export function TripQuickDrawer({
         setData(next);
         onUpdated?.(next);
       }
+      await afterTripMutation(queryClient);
       toast.success(`Trip marked ${status}`);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to update trip");
@@ -271,6 +268,7 @@ export function TripQuickDrawer({
       const next = { ...data, ...updated, ...edit };
       setData(next);
       onUpdated?.(next);
+      await afterTripMutation(queryClient);
       toast.success("Trip updated");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save trip");

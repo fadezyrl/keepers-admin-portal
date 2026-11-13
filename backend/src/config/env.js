@@ -26,6 +26,8 @@ const env = {
   supabaseJwtSecret: required('SUPABASE_JWT_SECRET'),
   corsOrigins,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 52428800),
+  nextRevalidateUrl: required('NEXT_REVALIDATE_URL'),
+  revalidateSecret: required('REVALIDATE_SECRET'),
 };
 
 function assertRuntimeConfig() {
