@@ -5,6 +5,7 @@ const { createNotification, notifyMany } = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 const { getAdminClient } = require('../config/supabase');
+const { toDateOnly } = require('../utils/dateOnly');
 
 const MEMBERSHIP_RANK = { junior: 0, intermediate: 1, advanced: 2 };
 
@@ -90,7 +91,7 @@ async function mapTrip(row, { userId = null } = {}) {
     description: row.description,
     destination: row.destination,
     meetingPoint: row.meeting_point,
-    date: row.trip_date,
+    date: toDateOnly(row.trip_date),
     time: row.trip_time,
     difficulty: row.difficulty,
     tripType: row.trip_type,

@@ -40,8 +40,21 @@ export default function LoginPage() {
 
   return (
     <div className="login-canvas">
-      <section className="relative hidden flex-col justify-between border-r border-white/10 px-12 py-14 md:flex">
-        <div>
+      <section className="relative hidden overflow-hidden border-r border-white/10 md:flex md:flex-col md:justify-between">
+        <img
+          src="/images/login-hero.jpg"
+          alt="Keepers 4x4 adventure"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(17,17,16,0.72) 0%, rgba(17,17,16,0.45) 42%, rgba(17,17,16,0.82) 100%)",
+          }}
+        />
+
+        <div className="relative z-[1] px-12 py-14">
           <p className="text-[0.7rem] tracking-[0.28em] uppercase text-[var(--keepers-stone)]">
             Keepers Adventures
           </p>
@@ -49,17 +62,11 @@ export default function LoginPage() {
             The club desk for routes, members, and marshalls.
           </h1>
         </div>
-        <p className="max-w-sm text-sm leading-relaxed text-[var(--keepers-stone)]">
+
+        <p className="relative z-[1] max-w-sm px-12 pb-14 text-sm leading-relaxed text-[var(--keepers-stone)]">
           Premium administration for the Keepers membership — deliberate, quiet,
           and built around the road ahead.
         </p>
-        <div
-          className="pointer-events-none absolute inset-0 opacity-40"
-          style={{
-            background:
-              "radial-gradient(ellipse at 20% 20%, rgba(243,240,234,0.12), transparent 50%), linear-gradient(160deg, transparent 40%, rgba(162,164,155,0.08))",
-          }}
-        />
       </section>
 
       <section className="flex items-center justify-center bg-[var(--keepers-ivory)] px-6 py-16">
