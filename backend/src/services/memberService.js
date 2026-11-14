@@ -292,18 +292,29 @@ async function updateOwnProfile(userId, payload, req) {
 
   if (payload.notificationPrefs) {
     await query(
-      `INSERT INTO notification_preferences (user_id, trips, events, club)
-       VALUES ($1, COALESCE($2, TRUE), COALESCE($3, TRUE), COALESCE($4, TRUE))
+      `INSERT INTO notification_preferences (user_id, trips, events, club, registrations, ratings)
+       VALUES (
+         $1,
+         COALESCE($2, TRUE),
+         COALESCE($3, TRUE),
+         COALESCE($4, TRUE),
+         COALESCE($5, TRUE),
+         COALESCE($6, TRUE)
+       )
        ON CONFLICT (user_id) DO UPDATE SET
          trips = COALESCE($2, notification_preferences.trips),
          events = COALESCE($3, notification_preferences.events),
          club = COALESCE($4, notification_preferences.club),
+         registrations = COALESCE($5, notification_preferences.registrations),
+         ratings = COALESCE($6, notification_preferences.ratings),
          updated_at = NOW()`,
       [
         userId,
         payload.notificationPrefs.trips,
         payload.notificationPrefs.events,
         payload.notificationPrefs.club,
+        payload.notificationPrefs.registrations,
+        payload.notificationPrefs.ratings,
       ],
     );
   }
@@ -410,7 +421,8 @@ async function setMemberStatus(memberId, { status, reason }, actor, req) {
           : status === 'suspended'
             ? 'Your account has been deactivated by an Admin.'
             : 'Your membership status was updated.',
-    data: { status },
+    data: { status, screen: 'keepers://settings' },
+    idempotencyKey: `member.status:${memberId}:${status}:${existing.rows[0].status}`,
   });
 
   cachePresets.member(`member.status.${status}`);
@@ -477,6 +489,22 @@ async function assignRole(memberId, roleCode, actor, req) {
     entityId: memberId,
     metadata: { role: roleCode },
     req,
+  });
+
+  const roleLabels = {
+    marshall: 'Marshall',
+    pre_marshall: 'Pre-Marshall',
+    admin: 'Admin',
+    super_admin: 'Super Admin',
+    member: 'Member',
+  };
+  await createNotification({
+    userId: memberId,
+    type: 'admin',
+    title: 'Role assigned',
+    body: `You have been assigned the ${roleLabels[roleCode] || roleCode} role.`,
+    data: { role: roleCode, screen: 'keepers://settings' },
+    idempotencyKey: `role.assign:${memberId}:${roleCode}`,
   });
 
   return getMemberById(memberId, actor);

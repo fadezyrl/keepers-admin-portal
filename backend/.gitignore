@@ -1,4 +1,10 @@
 .env
 .seed-admin.local
 node_modules/
+secrets/
+**/firebase-service-account*.json
+**/serviceAccount*.json
+*.p8
+*.p12
+GoogleService-Info.plist
 

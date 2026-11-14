@@ -270,8 +270,16 @@ async function me(userId) {
           trips: prefs.rows[0].trips,
           events: prefs.rows[0].events,
           club: prefs.rows[0].club,
+          registrations: prefs.rows[0].registrations !== false,
+          ratings: prefs.rows[0].ratings !== false,
         }
-      : { trips: true, events: true, club: true },
+      : {
+          trips: true,
+          events: true,
+          club: true,
+          registrations: true,
+          ratings: true,
+        },
     privacy: {
       showVehicle: ctx.profile.privacy_show_vehicle,
       showSocial: ctx.profile.privacy_show_social,

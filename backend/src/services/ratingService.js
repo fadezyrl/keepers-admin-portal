@@ -1,7 +1,7 @@
 const { query, withTransaction } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
-const { createNotification } = require('./notificationService');
+const { createNotification, notifyMany, listAdminUserIds } = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 
@@ -217,6 +217,38 @@ async function createRating(payload, actor, req) {
     req,
   });
 
+  await createNotification({
+    userId: memberId,
+    type: 'upgrade',
+    title: 'You received a trip rating',
+    body: 'A Marshall rated your performance on a recent drive.',
+    data: {
+      tripId,
+      ratingId: rating.rating.id,
+      screen: `keepers://progress/trips/${tripId}`,
+    },
+    idempotencyKey: `rating.create:${rating.rating.id}`,
+  });
+
+  if (rating.upgradeRequest) {
+    const adminIds = await listAdminUserIds();
+    await notifyMany(
+      adminIds.filter((id) => id !== actor.id),
+      {
+        type: 'upgrade',
+        title: 'Upgrade recommendation pending',
+        body: 'A Marshall recommended a membership upgrade for review.',
+        data: {
+          upgradeRequestId: rating.upgradeRequest.id,
+          tripId,
+          memberId,
+          screen: 'keepers://notifications',
+        },
+        idempotencyKey: `upgrade.recommend:${rating.upgradeRequest.id}`,
+      },
+    );
+  }
+
   return rating;
 }
 
@@ -346,7 +378,12 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
       decision === 'approved'
         ? 'Your membership level has been updated.'
         : 'A membership upgrade recommendation was not approved.',
-    data: { upgradeRequestId: id, decision },
+    data: {
+      upgradeRequestId: id,
+      decision,
+      screen: 'keepers://progress',
+    },
+    idempotencyKey: `upgrade.review.member:${id}:${decision}`,
   });
 
   await createNotification({
@@ -354,7 +391,12 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
     type: 'upgrade',
     title: `Upgrade recommendation ${decision}`,
     body: `Your recommendation was ${decision}.`,
-    data: { upgradeRequestId: id, decision },
+    data: {
+      upgradeRequestId: id,
+      decision,
+      screen: 'keepers://marshall/upgrades',
+    },
+    idempotencyKey: `upgrade.review.recommender:${id}:${decision}`,
   });
 
   cachePresets.rating(`upgrade.${decision}`);

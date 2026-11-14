@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { ApiError } from "@/lib/api";
 import { Alert } from "@/components/ui/Alert";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function LoginPage() {
   const { login, token, loading } = useAuth();
@@ -55,9 +56,7 @@ export default function LoginPage() {
         />
 
         <div className="relative z-[1] px-12 py-14">
-          <p className="text-[0.7rem] tracking-[0.28em] uppercase text-[var(--keepers-stone)]">
-            Keepers Adventures
-          </p>
+          <BrandLogo tone="dark" height={40} />
           <h1 className="font-display mt-8 max-w-md text-5xl leading-[1.05] text-[var(--keepers-ivory)]">
             The club desk for routes, members, and marshalls.
           </h1>
@@ -71,10 +70,10 @@ export default function LoginPage() {
 
       <section className="flex items-center justify-center bg-[var(--keepers-ivory)] px-6 py-16">
         <div className="w-full max-w-md">
-          <p className="text-[0.7rem] tracking-[0.22em] uppercase text-[var(--keepers-muted)] md:hidden">
-            Keepers Adventures
-          </p>
-          <h2 className="font-display mt-3 text-4xl text-[var(--keepers-black)]">Sign in</h2>
+          <BrandLogo tone="light" height={36} className="md:hidden" />
+          <h2 className="font-display mt-6 text-4xl text-[var(--keepers-black)] md:mt-0">
+            Sign in
+          </h2>
           <p className="mt-2 text-sm text-[var(--keepers-muted)]">
             Administrator access only.
           </p>

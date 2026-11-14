@@ -3,6 +3,7 @@ const multer = require('multer');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/response');
 const contentService = require('../services/contentService');
+const deviceTokenService = require('../services/deviceTokenService');
 const { env } = require('../config/env');
 const {
   authenticate,
@@ -205,6 +206,41 @@ router.post(
   }),
 );
 
+router.post(
+  '/notifications/devices/register',
+  authenticate,
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await deviceTokenService.registerDeviceToken(req.user.id, req.body || {});
+    return ok(res, data, 'Device registered');
+  }),
+);
+
+router.delete(
+  '/notifications/devices/:id',
+  authenticate,
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const data = await deviceTokenService.deactivateDeviceToken(req.user.id, req.params.id);
+    return ok(res, data, 'Device deactivated');
+  }),
+);
+
+router.post(
+  '/notifications/devices/deactivate',
+  authenticate,
+  requireApprovedMember,
+  asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    if (body.fcmToken) {
+      const data = await deviceTokenService.deactivateTokenByValue(req.user.id, body.fcmToken);
+      return ok(res, data || { success: true }, 'Device deactivated');
+    }
+    const data = await deviceTokenService.deactivateAllForUser(req.user.id);
+    return ok(res, data, 'Devices deactivated');
+  }),
+);
+
 router.get(
   '/notifications',
   authenticate,
@@ -212,6 +248,8 @@ router.get(
   asyncHandler(async (req, res) => {
     const data = await contentService.listNotifications(req.user.id, {
       unreadOnly: req.query.unreadOnly === 'true',
+      limit: req.query.limit ? Number(req.query.limit) : 100,
+      offset: req.query.offset ? Number(req.query.offset) : 0,
     });
     return ok(res, data);
   }),

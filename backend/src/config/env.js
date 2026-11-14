@@ -28,6 +28,9 @@ const env = {
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 52428800),
   nextRevalidateUrl: required('NEXT_REVALIDATE_URL'),
   revalidateSecret: required('REVALIDATE_SECRET'),
+  firebaseProjectId: required('FIREBASE_PROJECT_ID') || 'keepers-68d3e',
+  /** Optional. Required for multi-instance chat presence / FCM suppress. */
+  redisUrl: required('REDIS_URL'),
 };
 
 function assertRuntimeConfig() {

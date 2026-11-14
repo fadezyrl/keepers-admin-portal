@@ -9,9 +9,14 @@
     "migrate": "node scripts/migrate.js",
     "inspect-db": "node scripts/inspect-db.js",
     "seed:admin": "node scripts/seed-admin.js",
-    "seed:demo": "node scripts/seed-demo-content.js"
+    "seed:demo": "node scripts/seed-demo-content.js",
+    "test": "node --test __tests__/deviceTokenService.test.js __tests__/notificationService.test.js"
   },
-  "keywords": ["keepers", "adventures", "api"],
+  "keywords": [
+    "keepers",
+    "adventures",
+    "api"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -22,12 +27,15 @@
     "express": "^5.3.0",
     "express-rate-limit": "^8.2.1",
     "express-validator": "^7.3.1",
+    "firebase-admin": "^14.5.1",
     "helmet": "^8.1.0",
+    "ioredis": "^6.0.0",
     "joi": "^18.0.2",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "pg": "^8.16.3",
+    "socket.io": "^4.8.4",
     "uuid": "^13.0.0",
     "zod": "^4.1.12"
   },

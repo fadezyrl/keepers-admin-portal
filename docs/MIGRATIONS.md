@@ -34,6 +34,15 @@ Seeds:
 - Documents: protocols, safety-briefing, brochure, terms, privacy
 - App settings including `registration_requires_approval=true`
 
+## 008_device_tokens_and_push.sql
+
+Adds:
+
+- `device_tokens` (FCM token registry per user/device)
+- `notifications.idempotency_key` + `notifications.push_status`
+- `notification_preferences.registrations` + `ratings`
+- RLS SELECT policy `device_tokens_own`
+
 ## Verify
 
 ```bash

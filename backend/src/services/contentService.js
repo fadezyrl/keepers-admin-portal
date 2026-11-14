@@ -493,19 +493,25 @@ async function fanOutAnnouncement(announcement) {
       type: 'announcement',
       title: announcement.title,
       body: announcement.body,
-      data: { announcementId: announcement.id },
+      data: {
+        announcementId: announcement.id,
+        screen: 'keepers://home',
+      },
       announcementId: announcement.id,
+      idempotencyKey: `announcement.publish:${announcement.id}`,
     },
   );
 }
 
-async function listNotifications(userId, { unreadOnly = false } = {}) {
+async function listNotifications(userId, { unreadOnly = false, limit = 100, offset = 0 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
   const res = await query(
     `SELECT * FROM notifications
      WHERE user_id = $1 AND ($2::boolean = FALSE OR read_at IS NULL)
      ORDER BY created_at DESC
-     LIMIT 100`,
-    [userId, unreadOnly],
+     LIMIT $3 OFFSET $4`,
+    [userId, unreadOnly, safeLimit, safeOffset],
   );
   return res.rows.map((n) => ({
     id: n.id,
@@ -515,6 +521,7 @@ async function listNotifications(userId, { unreadOnly = false } = {}) {
     timestamp: n.created_at,
     read: Boolean(n.read_at),
     data: n.data,
+    pushStatus: n.push_status || null,
   }));
 }
 

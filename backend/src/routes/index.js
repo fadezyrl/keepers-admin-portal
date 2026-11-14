@@ -6,6 +6,7 @@ const ratingRoutes = require('./ratingRoutes');
 const contentRoutes = require('./contentRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
 const eventRoutes = require('./eventRoutes');
+const chatRoutes = require('./chatRoutes');
 
 const router = express.Router();
 
@@ -27,5 +28,6 @@ router.use('/ratings', ratingRoutes);
 router.use('/content', contentRoutes);
 router.use('/events', eventRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/chat', chatRoutes);
 
 module.exports = router;

@@ -18,6 +18,10 @@ const cormorant = Cormorant_Garamond({
 export const metadata: Metadata = {
   title: "Keepers Adventures Admin",
   description: "Administration portal for Keepers Adventures",
+  icons: {
+    icon: "/brand/logo-dark.png",
+    apple: "/brand/logo-dark.png",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

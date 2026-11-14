@@ -1,11 +1,39 @@
 const { query, withTransaction } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { writeAudit } = require('./auditService');
-const { createNotification, notifyMany } = require('./notificationService');
+const {
+  createNotification,
+  notifyMany,
+  listEligibleMemberIdsForTrip,
+  listTripParticipantIds,
+} = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 const { getAdminClient } = require('../config/supabase');
 const { toDateOnly } = require('../utils/dateOnly');
+const chatService = require('./chatService');
+
+async function syncChatAfterRegistrationChange(tripId, userId, status) {
+  try {
+    if (status === 'registered') {
+      await chatService.activateUserOnTripChats(tripId, userId, 'member');
+      return;
+    }
+    if (['rejected', 'cancelled'].includes(status)) {
+      await chatService.revokeUserFromTripChats(tripId, userId);
+      return;
+    }
+    await chatService.ensureGroupConversation(tripId);
+  } catch (err) {
+    console.warn(
+      '[chat] lifecycle sync failed',
+      tripId,
+      userId,
+      status,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
 
 const MEMBERSHIP_RANK = { junior: 0, intermediate: 1, advanced: 2 };
 
@@ -530,6 +558,21 @@ async function updateTrip(id, payload, actor, req) {
     req,
   });
 
+  // Material schedule/location changes notify registered participants.
+  const materialKeys = ['date', 'time', 'destination', 'meetingPoint', 'title'];
+  const materialChanged = materialKeys.some((key) => payload[key] != null);
+  if (materialChanged && existing.status === 'published') {
+    const participantIds = await listTripParticipantIds(id, ['registered', 'pending']);
+    if (participantIds.length) {
+      await notifyMany(participantIds, {
+        type: 'trip',
+        title: 'Trip updated',
+        body: `${existing.title} details were updated. Check the latest schedule.`,
+        data: { tripId: id, screen: `keepers://trips/${id}` },
+      });
+    }
+  }
+
   cachePresets.trip('trip.update');
   return getTrip(id, actor.id, actor);
 }
@@ -664,6 +707,55 @@ async function setTripStatus(id, status, actor, req, reason) {
     metadata: { reason },
     req,
   });
+
+  if (status !== existing.status) {
+    if (status === 'published') {
+      const eligible = await listEligibleMemberIdsForTrip(existing);
+      const recipients = eligible.filter((uid) => uid !== actor.id);
+      if (recipients.length) {
+        await notifyMany(recipients, {
+          type: 'trip',
+          title: 'New trip published',
+          body: `${existing.title} is now open for registration.`,
+          data: { tripId: id, status, screen: `keepers://trips/${id}` },
+          idempotencyKey: `trip.status.published:${id}`,
+        });
+      }
+      try {
+        await chatService.syncGroupParticipantsForTrip(id);
+      } catch (err) {
+        console.warn('[chat] trip publish chat sync failed', err?.message || err);
+      }
+    } else if (status === 'cancelled') {
+      const participantIds = await listTripParticipantIds(id, [
+        'registered',
+        'pending',
+        'waitlist',
+      ]);
+      if (participantIds.length) {
+        await notifyMany(participantIds, {
+          type: 'trip',
+          title: 'Trip cancelled',
+          body: reason
+            ? `${existing.title} was cancelled: ${reason}`
+            : `${existing.title} was cancelled.`,
+          data: { tripId: id, status, screen: `keepers://trips/${id}` },
+          idempotencyKey: `trip.status.cancelled:${id}`,
+        });
+      }
+      try {
+        await query(
+          `UPDATE conversations
+           SET is_readonly = TRUE, updated_at = NOW()
+           WHERE trip_id = $1`,
+          [id],
+        );
+        await chatService.syncGroupParticipantsForTrip(id);
+      } catch (err) {
+        console.warn('[chat] trip cancel chat sync failed', err?.message || err);
+      }
+    }
+  }
 
   cachePresets.trip(`trip.status.${status}`);
   return getTrip(id, actor.id);
@@ -981,10 +1073,17 @@ async function joinTrip(tripId, user, req) {
       type: 'registration',
       title: 'New trip registration',
       body: `${profile.first_name} ${profile.last_name} joined ${trip.title} (${status})`,
-      data: { tripId, userId: user.id, status },
+      data: {
+        tripId,
+        userId: user.id,
+        status,
+        screen: `keepers://trips/${tripId}`,
+      },
+      idempotencyKey: `trip.join:${registration.id}`,
     });
   }
 
+  await syncChatAfterRegistrationChange(tripId, user.id, status);
   return getTrip(tripId, user.id);
 }
 
@@ -1052,7 +1151,32 @@ async function cancelRegistration(tripId, user, req) {
       type: 'registration',
       title: 'Waitlist promoted',
       body: `A seat opened for ${promoted.tripTitle}. You are now registered.`,
-      data: { tripId },
+      data: { tripId, screen: `keepers://trips/${tripId}` },
+      idempotencyKey: `waitlist.promote:${tripId}:${promoted.userId}`,
+    });
+  }
+
+  const tripRow = await getTripRow(tripId);
+  if (tripRow?.organizer_id && tripRow.organizer_id !== user.id) {
+    const member = await query(
+      `SELECT first_name, last_name FROM member_profiles WHERE id = $1`,
+      [user.id],
+    );
+    const name = member.rows[0]
+      ? `${member.rows[0].first_name} ${member.rows[0].last_name}`.trim()
+      : 'A member';
+    await createNotification({
+      userId: tripRow.organizer_id,
+      type: 'registration',
+      title: 'Registration cancelled',
+      body: `${name} cancelled their registration for ${tripRow.title}.`,
+      data: {
+        tripId,
+        userId: user.id,
+        status: 'cancelled',
+        screen: `keepers://trips/${tripId}`,
+      },
+      idempotencyKey: `trip.cancel_registration:${cancelled.id}`,
     });
   }
 
@@ -1064,6 +1188,11 @@ async function cancelRegistration(tripId, user, req) {
     metadata: { tripId },
     req,
   });
+
+  await syncChatAfterRegistrationChange(tripId, user.id, 'cancelled');
+  if (promoted?.userId) {
+    await syncChatAfterRegistrationChange(tripId, promoted.userId, 'registered');
+  }
 
   return getTrip(tripId, user.id);
 }
@@ -1562,7 +1691,12 @@ async function reviewRegistration(registrationId, payload, actor, req) {
     type: 'registration',
     title: 'Registration update',
     body: `Your trip registration is now “${nextStatus}”.`,
-    data: { tripId: row.trip_id, status: nextStatus },
+    data: {
+      tripId: row.trip_id,
+      status: nextStatus,
+      screen: `keepers://trips/${row.trip_id}`,
+    },
+    idempotencyKey: `registration.review:${registrationId}:${nextStatus}`,
   });
 
   if (promoted) {
@@ -1571,8 +1705,18 @@ async function reviewRegistration(registrationId, payload, actor, req) {
       type: 'registration',
       title: 'Waitlist promoted',
       body: `A seat opened — you are now registered for ${tripTitle}.`,
-      data: { tripId: row.trip_id, status: 'registered' },
+      data: {
+        tripId: row.trip_id,
+        status: 'registered',
+        screen: `keepers://trips/${row.trip_id}`,
+      },
+      idempotencyKey: `waitlist.promote:${row.trip_id}:${promoted.user_id}`,
     });
+  }
+
+  await syncChatAfterRegistrationChange(row.trip_id, row.user_id, nextStatus);
+  if (promoted?.user_id) {
+    await syncChatAfterRegistrationChange(row.trip_id, promoted.user_id, 'registered');
   }
 
   cachePresets.registration('registration.review');

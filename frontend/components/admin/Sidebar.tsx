@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const NAV_GROUPS = [
   {
@@ -25,6 +26,7 @@ const NAV_GROUPS = [
       { href: "/calendar", label: "Calendar" },
       { href: "/registrations", label: "Registrations" },
       { href: "/events", label: "Events" },
+      { href: "/chat", label: "Communication" },
     ],
   },
   {
@@ -73,14 +75,18 @@ export function Sidebar({
     >
       <div className="flex items-start justify-between gap-2 border-b border-white/10 px-4 py-5">
         <div className="min-w-0">
-          {!collapsed ? (
-            <p className="text-[0.65rem] tracking-[0.22em] uppercase text-keepers-stone">
-              Keepers Adventures
-            </p>
-          ) : null}
-          <p className="font-display mt-1 text-2xl leading-none tracking-tight">
-            {collapsed ? "K" : "Admin"}
-          </p>
+          {collapsed ? (
+            <div className="w-10 overflow-hidden">
+              <BrandLogo tone="dark" height={20} />
+            </div>
+          ) : (
+            <>
+              <BrandLogo tone="dark" height={28} />
+              <p className="mt-2 text-[0.65rem] tracking-[0.22em] uppercase text-keepers-stone">
+                Admin
+              </p>
+            </>
+          )}
         </div>
         <button
           type="button"

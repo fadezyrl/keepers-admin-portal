@@ -23,6 +23,9 @@ See `../docs/SETUP.md` and `../docs/API.md`.
 | `npm run migrate` | Apply SQL migrations |
 | `npm run inspect-db` | Non-destructive schema inspection |
 | `npm run seed:admin` | Create Super Admin via Supabase Auth |
+| `npm test` | Unit tests (device tokens + notifications) |
+
+FCM setup: see `../docs/FIREBASE_PUSH.md`.
 
 ## Layout
 

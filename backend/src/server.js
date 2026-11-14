@@ -1,3 +1,4 @@
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -6,6 +7,8 @@ const rateLimit = require('express-rate-limit');
 const { env, assertRuntimeConfig } = require('./config/env');
 const routes = require('./routes');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const { createChatSocketServer } = require('./realtime/chatSocket');
+const { initPresenceStore } = require('./services/presenceStore');
 
 const app = express();
 
@@ -50,7 +53,7 @@ app.use('/api', routes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-function start() {
+async function start() {
   const missing = assertRuntimeConfig();
   if (missing.length) {
     console.warn('[boot] Missing env vars (Auth/Storage features will be limited):', missing.join(', '));
@@ -63,13 +66,22 @@ function start() {
     process.exit(1);
   }
 
-  app.listen(env.port, '0.0.0.0', () => {
-    console.log(`[boot] Keepers API listening on 0.0.0.0:${env.port}`);
+  const presence = await initPresenceStore();
+  console.log(`[boot] Chat presence mode: ${presence.mode}`);
+
+  const server = http.createServer(app);
+  createChatSocketServer(server, { corsOrigins: env.corsOrigins });
+
+  server.listen(env.port, '0.0.0.0', () => {
+    console.log(`[boot] Keepers API + Socket.IO listening on 0.0.0.0:${env.port}`);
   });
 }
 
 if (require.main === module) {
-  start();
+  start().catch((err) => {
+    console.error('[boot] Failed to start', err);
+    process.exit(1);
+  });
 }
 
 module.exports = { app, start };
