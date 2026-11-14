@@ -606,7 +606,7 @@ async function getContentVersions(userId) {
       (SELECT MAX(updated_at)::text FROM membership_upgrade_requests) AS upgrades,
       (SELECT MAX(updated_at)::text FROM rating_criteria) AS rating_criteria,
       (SELECT MAX(updated_at)::text FROM trip_ratings) AS ratings,
-      (SELECT MAX(created_at)::text FROM trip_media WHERE deleted_at IS NULL) AS trip_media
+      (SELECT MAX(COALESCE(deleted_at, created_at))::text FROM trip_media) AS trip_media
     `,
     [userId],
   );

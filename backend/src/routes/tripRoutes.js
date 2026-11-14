@@ -90,7 +90,7 @@ router.get(
 
 router.post(
   '/registrations/:registrationId/review',
-  requirePermission('registrations.manage', 'trips.manage'),
+  requirePermission('registrations.manage', 'trips.manage', 'trips.manage_own'),
   asyncHandler(async (req, res) => {
     const data = await tripService.reviewRegistration(
       req.params.registrationId,
@@ -105,7 +105,7 @@ router.post(
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const data = await tripService.getTrip(req.params.id, req.user.id);
+    const data = await tripService.getTrip(req.params.id, req.user.id, req.user);
     return ok(res, data);
   }),
 );
@@ -134,8 +134,22 @@ router.post(
   requirePermission('trips.manage', 'trips.manage_own', 'media.manage'),
   asyncHandler(async (req, res) => {
     const media = await tripService.addTripMedia(req.params.id, req.body, req.user);
-    const data = await tripService.getTrip(req.params.id, req.user.id);
+    const data = await tripService.getTrip(req.params.id, req.user.id, req.user);
     return ok(res, { media, trip: data }, 'Media attached');
+  }),
+);
+
+router.delete(
+  '/:id/media/:mediaId',
+  requirePermission('trips.manage', 'trips.manage_own', 'media.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await tripService.deleteTripMedia(
+      req.params.id,
+      req.params.mediaId,
+      req.user,
+      req,
+    );
+    return ok(res, data, 'Media deleted');
   }),
 );
 

@@ -101,12 +101,14 @@ export const ROLE_META: Record<RoleCode, RoleMeta> = {
       "Organizes and manages their own drives, participants, attendance, ratings and upgrade recommendations.",
     responsibilities: [
       "Create and manage their own drives",
+      "Approve or reject registrations on drives they organize",
       "Mark attendance on drives they organize",
       "Rate eligible participants after drives",
       "Recommend membership upgrades",
     ],
     accessGains: [
       "Create new drives and manage the ones they organize",
+      "Approve or reject pending registrations on their own drives",
       "Mark attendance on their own drives",
       "Submit ratings for eligible participants",
       "Recommend membership upgrades after drives",
@@ -246,7 +248,15 @@ export const MATRIX_CATEGORIES: MatrixCategory[] = [
       {
         id: "registrations.manage",
         label: "Manage registrations",
-        permissions: ["registrations.manage"],
+        // Global list stays admin-only; Marshall reviews own drives via trips.manage_own + organizer_id.
+        permissions: ["registrations.manage", "trips.manage", "trips.manage_own"],
+        effective: {
+          super_admin: "allowed",
+          admin: "allowed",
+          marshall: "own_drives",
+          pre_marshall: "not_allowed",
+          member: "not_allowed",
+        },
       },
       {
         id: "attendance.mark",

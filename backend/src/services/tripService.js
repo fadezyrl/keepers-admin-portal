@@ -14,7 +14,47 @@ function isVideoUrl(url) {
   return /\.(mp4|mov|webm|m4v)(\?|$)/i.test(url) || /\/video\//i.test(url);
 }
 
-async function mapTrip(row, { userId = null } = {}) {
+function canManageAllTrips(actor) {
+  return hasPermission(actor, 'trips.manage');
+}
+
+function canManageOwnTrip(trip, actor) {
+  return (
+    Boolean(actor?.id) &&
+    hasPermission(actor, 'trips.manage_own') &&
+    trip?.organizer_id === actor.id
+  );
+}
+
+function assertCanManageTripMedia(trip, actor) {
+  if (canManageAllTrips(actor) || canManageOwnTrip(trip, actor)) return;
+  throw new AppError(403, 'FORBIDDEN', 'Cannot manage media for this trip');
+}
+
+function assertCanReviewTripRegistrations(trip, actor) {
+  if (
+    hasPermission(actor, 'registrations.manage') ||
+    canManageAllTrips(actor) ||
+    canManageOwnTrip(trip, actor)
+  ) {
+    return;
+  }
+  throw new AppError(403, 'FORBIDDEN', 'Not authorized for this trip');
+}
+
+function canViewManagedParticipants(row, actor, userId) {
+  if (actor) {
+    return (
+      hasPermission(actor, 'trips.manage') ||
+      hasPermission(actor, 'registrations.manage') ||
+      canManageOwnTrip(row, actor) ||
+      row.organizer_id === actor.id
+    );
+  }
+  return Boolean(userId && row.organizer_id === userId);
+}
+
+async function mapTrip(row, { userId = null, actor = null } = {}) {
   const media = await query(
     `SELECT id, media_type, public_url, thumbnail_url, caption, display_order
      FROM trip_media WHERE trip_id = $1 AND deleted_at IS NULL ORDER BY display_order, created_at`,
@@ -24,7 +64,8 @@ async function mapTrip(row, { userId = null } = {}) {
   const counts = await query(
     `SELECT
        COUNT(*) FILTER (WHERE status = 'registered')::int AS registered_count,
-       COUNT(*) FILTER (WHERE status = 'waitlist')::int AS waitlist_count
+       COUNT(*) FILTER (WHERE status = 'waitlist')::int AS waitlist_count,
+       COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count
      FROM trip_registrations WHERE trip_id = $1`,
     [row.id],
   );
@@ -38,17 +79,32 @@ async function mapTrip(row, { userId = null } = {}) {
     myRegistration = reg.rows[0] || null;
   }
 
+  const showManagedParticipants = canViewManagedParticipants(row, actor, userId);
+  const participantStatuses = showManagedParticipants
+    ? ['pending', 'registered', 'waitlist', 'rejected']
+    : ['registered', 'waitlist'];
+
   const participants = await query(
     `SELECT mp.id, mp.first_name, mp.last_name, mp.avatar_url,
+            tr.id AS registration_id,
             tr.status AS registration_status,
+            tr.registered_at,
             (SELECT manufacturer || ' ' || model FROM vehicles v
              WHERE v.user_id = mp.id AND v.deleted_at IS NULL
              ORDER BY is_primary DESC LIMIT 1) AS vehicle
      FROM trip_registrations tr
      JOIN member_profiles mp ON mp.id = tr.user_id
-     WHERE tr.trip_id = $1 AND tr.status IN ('registered', 'waitlist')
-     ORDER BY tr.registered_at ASC`,
-    [row.id],
+     WHERE tr.trip_id = $1 AND tr.status = ANY($2::text[])
+     ORDER BY
+       CASE tr.status
+         WHEN 'pending' THEN 0
+         WHEN 'registered' THEN 1
+         WHEN 'waitlist' THEN 2
+         WHEN 'rejected' THEN 3
+         ELSE 4
+       END,
+       tr.registered_at ASC NULLS LAST`,
+    [row.id, participantStatuses],
   );
 
   let organizer = null;
@@ -104,6 +160,7 @@ async function mapTrip(row, { userId = null } = {}) {
     maxParticipants: row.max_participants,
     registeredCount,
     waitlistCount: counts.rows[0].waitlist_count,
+    pendingCount: counts.rows[0].pending_count,
     vehicleRequirements: row.vehicle_requirements,
     instructions: row.instructions,
     routeSummary: row.route_summary,
@@ -120,7 +177,9 @@ async function mapTrip(row, { userId = null } = {}) {
       name: `${p.first_name} ${p.last_name}`.trim(),
       avatar: p.avatar_url,
       vehicle: p.vehicle,
+      registrationId: p.registration_id,
       registrationStatus: p.registration_status,
+      registeredAt: p.registered_at,
     })),
     status: clientStatus,
     publishStatus: row.status,
@@ -263,10 +322,10 @@ async function listTrips({
   return { items, pagination: { page, limit } };
 }
 
-async function getTrip(id, userId) {
+async function getTrip(id, userId, actor = null) {
   const row = await getTripRow(id);
   if (!row) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
-  return mapTrip(row, { userId });
+  return mapTrip(row, { userId, actor });
 }
 
 function normalizeTripTime(time) {
@@ -364,7 +423,7 @@ async function createTrip(payload, actor, req) {
   });
 
   cachePresets.trip('trip.create');
-  return getTrip(tripId, actor.id);
+  return getTrip(tripId, actor.id, actor);
 }
 
 async function updateTrip(id, payload, actor, req) {
@@ -472,16 +531,24 @@ async function updateTrip(id, payload, actor, req) {
   });
 
   cachePresets.trip('trip.update');
-  return getTrip(id, actor.id);
+  return getTrip(id, actor.id, actor);
 }
 
 async function addTripMedia(tripId, payload, actor) {
+  const trip = await getTripRow(tripId);
+  if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+  assertCanManageTripMedia(trip, actor);
+
   const url = payload.url || payload.publicUrl;
   if (!url) throw new AppError(400, 'VALIDATION_ERROR', 'Media URL is required');
   const mediaType =
     payload.mediaType || (isVideoUrl(url) ? 'video' : 'image');
+  if (!['image', 'video'].includes(mediaType)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'mediaType must be image or video');
+  }
   const orderRes = await query(
-    `SELECT COALESCE(MAX(display_order), 0)::int AS n FROM trip_media WHERE trip_id = $1`,
+    `SELECT COALESCE(MAX(display_order), 0)::int AS n
+     FROM trip_media WHERE trip_id = $1 AND deleted_at IS NULL`,
     [tripId],
   );
   const order = (orderRes.rows[0]?.n || 0) + 1;
@@ -491,7 +558,77 @@ async function addTripMedia(tripId, payload, actor) {
      RETURNING *`,
     [tripId, mediaType, url, payload.caption || null, order, actor.id],
   );
+  cachePresets.trip('trip.media.add');
   return inserted.rows[0];
+}
+
+async function deleteTripMedia(tripId, mediaId, actor, req) {
+  const trip = await getTripRow(tripId);
+  if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+  assertCanManageTripMedia(trip, actor);
+
+  const existing = await query(
+    `SELECT * FROM trip_media
+     WHERE id = $1 AND trip_id = $2 AND deleted_at IS NULL`,
+    [mediaId, tripId],
+  );
+  if (!existing.rows[0]) {
+    throw new AppError(404, 'NOT_FOUND', 'Media not found on this trip');
+  }
+  const media = existing.rows[0];
+
+  await query(
+    `UPDATE trip_media SET deleted_at = NOW() WHERE id = $1`,
+    [mediaId],
+  );
+
+  // Remove storage object only when no other active trip_media (or cover) still references it
+  const refs = [];
+  const fromPath = extractStorageRef(media.storage_path);
+  const fromUrl = extractStorageRef(media.public_url);
+  if (fromPath) refs.push(fromPath);
+  if (fromUrl && (!fromPath || fromUrl.path !== fromPath.path || fromUrl.bucket !== fromPath.bucket)) {
+    refs.push(fromUrl);
+  }
+
+  const storageRefsToRemove = [];
+  for (const ref of refs) {
+    if (!ref?.bucket || !ref?.path) continue;
+    const stillUsed = await query(
+      `SELECT 1 FROM trip_media
+       WHERE deleted_at IS NULL
+         AND id <> $1
+         AND (
+           storage_path = $2 OR public_url = $2
+           OR storage_path LIKE '%' || $3
+           OR public_url LIKE '%' || $3
+         )
+       LIMIT 1`,
+      [mediaId, media.public_url || media.storage_path, ref.path],
+    );
+    const coverUses =
+      trip.cover_image_url &&
+      (trip.cover_image_url === media.public_url ||
+        trip.cover_image_url === media.storage_path ||
+        trip.cover_image_url.includes(ref.path));
+    if (!stillUsed.rows[0] && !coverUses) {
+      storageRefsToRemove.push(ref);
+    }
+  }
+
+  const storage = await removeTripStorageFiles(storageRefsToRemove);
+
+  await writeAudit({
+    actorId: actor.id,
+    action: 'trip.media.delete',
+    entityType: 'trip_media',
+    entityId: mediaId,
+    metadata: { tripId, storage },
+    req,
+  });
+
+  cachePresets.trip('trip.media.delete');
+  return { id: mediaId, tripId, deleted: true, storage };
 }
 
 async function setTripStatus(id, status, actor, req, reason) {
@@ -1024,7 +1161,7 @@ async function listMyOrganizedTrips(actor, { status, page = 1, limit = 50 } = {}
 
   const items = [];
   for (const row of result.rows) {
-    const mapped = await mapTrip(row, { userId: actor.id });
+    const mapped = await mapTrip(row, { userId: actor.id, actor });
     items.push({ ...mapped, accessMode: 'organizer' });
   }
   return { items, pagination: { page, limit } };
@@ -1183,7 +1320,7 @@ async function listMyAssignedTrips(actor, { status, page = 1, limit = 50 } = {})
 
   const items = [];
   for (const row of result.rows) {
-    const mapped = await mapTrip(row, { userId: actor.id });
+    const mapped = await mapTrip(row, { userId: actor.id, actor });
     items.push({ ...mapped, accessMode: 'assigned' });
   }
   return { items, pagination: { page, limit } };
@@ -1210,6 +1347,7 @@ module.exports = {
   createTrip,
   updateTrip,
   addTripMedia,
+  deleteTripMedia,
   setTripStatus,
   softDeleteTrip,
   permanentlyDeleteTrip,
@@ -1308,15 +1446,14 @@ async function listRegistrations({
 }
 
 async function reviewRegistration(registrationId, payload, actor, req) {
-  if (!hasPermission(actor, 'registrations.manage') && !hasPermission(actor, 'trips.manage')) {
-    throw new AppError(403, 'FORBIDDEN', 'Cannot manage registrations');
-  }
-
   const nextStatus = payload.status;
   const allowed = ['registered', 'waitlist', 'rejected', 'cancelled', 'pending'];
   if (!allowed.includes(nextStatus)) {
     throw new AppError(400, 'INVALID_STATUS', 'Invalid registration status');
   }
+
+  const isGlobalReviewer =
+    hasPermission(actor, 'registrations.manage') || hasPermission(actor, 'trips.manage');
 
   const { updated, row, promoted, tripTitle } = await withTransaction(async (client) => {
     const existing = await client.query(
@@ -1331,6 +1468,23 @@ async function reviewRegistration(registrationId, payload, actor, req) {
       [row.trip_id],
     );
     const trip = tripRes.rows[0];
+    if (!trip) throw new AppError(404, 'NOT_FOUND', 'Trip not found');
+
+    assertCanReviewTripRegistrations(trip, actor);
+
+    // Marshall (manage_own only) may only review pending → registered|rejected
+    if (!isGlobalReviewer) {
+      if (row.status !== 'pending') {
+        throw new AppError(409, 'ALREADY_REVIEWED', 'Registration has already been reviewed');
+      }
+      if (!['registered', 'rejected'].includes(nextStatus)) {
+        throw new AppError(403, 'FORBIDDEN', 'Marshalls may only approve or reject pending registrations');
+      }
+    }
+
+    if (['registered', 'rejected'].includes(nextStatus) && ['cancelled', 'completed'].includes(trip.status)) {
+      throw new AppError(409, 'TRIP_CLOSED', 'Cannot review registrations for a closed trip');
+    }
 
     if (nextStatus === 'registered') {
       const countRes = await client.query(
@@ -1338,7 +1492,7 @@ async function reviewRegistration(registrationId, payload, actor, req) {
          WHERE trip_id = $1 AND status IN ('registered', 'pending') AND id <> $2`,
         [row.trip_id, registrationId],
       );
-      if (trip && countRes.rows[0].n >= trip.max_participants) {
+      if (countRes.rows[0].n >= trip.max_participants) {
         throw new AppError(409, 'TRIP_FULL', 'Trip is full — move to waitlist instead');
       }
     }
