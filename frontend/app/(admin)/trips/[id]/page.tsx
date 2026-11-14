@@ -563,8 +563,8 @@ function TripDetailInner() {
             ) : (
               <ul className="m-0 list-none divide-y divide-[var(--keepers-line)] p-0">
                 {data.participants!.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between gap-3 px-5 py-4">
-                    <div>
+                  <li key={p.id} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 flex-1">
                       <Link href={`/members/${p.id}`} className="font-medium hover:underline">
                         {p.name}
                       </Link>
@@ -572,10 +572,34 @@ function TripDetailInner() {
                         <StatusBadge status={p.registrationStatus} />
                         {p.vehicle ? <span>{p.vehicle}</span> : null}
                       </div>
+                      {p.readinessChecklist?.length ? (
+                        <div className="mt-3 rounded-md border border-[var(--keepers-line)] bg-[var(--keepers-cream)]/40 px-3 py-2">
+                          <p className="m-0 text-[0.65rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                            Vehicle readiness
+                          </p>
+                          <ul className="mt-2 mb-0 list-none space-y-1 p-0">
+                            {p.readinessChecklist.map((item) => (
+                              <li
+                                key={item.id}
+                                className={`text-sm ${
+                                  item.selected
+                                    ? "text-[var(--keepers-black)]"
+                                    : "text-[var(--keepers-muted)]"
+                                }`}
+                              >
+                                <span className="mr-2 inline-block w-4 text-center">
+                                  {item.selected ? "✓" : "○"}
+                                </span>
+                                {item.label}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
                     </div>
                     <button
                       type="button"
-                      className="btn btn-secondary"
+                      className="btn btn-secondary shrink-0"
                       disabled={busy}
                       onClick={() => markAttendance(p.id, true)}
                     >

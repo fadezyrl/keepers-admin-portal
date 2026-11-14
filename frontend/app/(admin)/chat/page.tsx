@@ -59,8 +59,15 @@ export default function ChatModerationPage() {
 
   const deleteMessage = async (messageId: string) => {
     if (!confirm("Soft-delete this message?")) return;
-    await api.delete(`/chat/messages/${messageId}`);
-    if (selected) await loadMessages(selected);
+    setBusy(true);
+    try {
+      await api.delete(`/chat/messages/${messageId}`);
+      if (selected) await loadMessages(selected);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {

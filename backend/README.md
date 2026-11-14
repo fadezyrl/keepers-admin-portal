@@ -27,6 +27,14 @@ See `../docs/SETUP.md` and `../docs/API.md`.
 
 FCM setup: see `../docs/FIREBASE_PUSH.md`.
 
+## Trip chat (Socket.IO + presence)
+
+- REST under `/api/chat/*`; Socket.IO on the same HTTP server (`/socket.io`).
+- Private conversations use `conversations.private_member_id` with `UNIQUE (trip_id, private_member_id)`.
+- Every socket/REST send, join, receipt, and media action re-checks conversation ACL. Cancel/reject registration revokes rooms immediately.
+- Delivered/read receipts update only from device ACKs — not from Socket emit or FCM send.
+- **Presence / FCM suppress:** set `REDIS_URL` for multi-instance. Without it, presence is in-memory and **single-instance only** (documented in `.env.example` and boot logs).
+
 ## Layout
 
 ```
@@ -34,7 +42,8 @@ src/
   config/       env, db pool, supabase clients
   middleware/   auth, RBAC, errors
   routes/       HTTP routes
-  services/     business logic
+  realtime/     Socket.IO chat gateway
+  services/     business logic (+ presenceStore)
   validators/   Zod schemas
   utils/        responses, AppError
 migrations/     versioned SQL

@@ -103,6 +103,14 @@ router.post(
 );
 
 router.get(
+  '/readiness-requirements',
+  asyncHandler(async (_req, res) => {
+    const items = await tripService.listActiveRequirements();
+    return ok(res, { items });
+  }),
+);
+
+router.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const data = await tripService.getTrip(req.params.id, req.user.id, req.user);

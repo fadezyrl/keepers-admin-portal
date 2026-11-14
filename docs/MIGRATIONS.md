@@ -43,6 +43,14 @@ Adds:
 - `notification_preferences.registrations` + `ratings`
 - RLS SELECT policy `device_tokens_own`
 
+## 010_vehicle_readiness.sql
+
+Adds:
+
+- `vehicle_readiness_requirements` catalog (stable `code`, editable `label`)
+- `trip_registration_readiness_items` per-registration snapshots (`selected`, `label_snapshot`)
+- Seeds 7 standard optional pre-trip vehicle checks (join allows 0–N selections)
+
 ## Verify
 
 ```bash

@@ -612,4 +612,6 @@ module.exports = {
   getMyProgress,
   getMyTrips,
   getMyTripPerformance,
+  /** Shared rating/attendance aggregates for public member profiles */
+  getStats,
 };

@@ -11,6 +11,12 @@ const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 const { getAdminClient } = require('../config/supabase');
 const { toDateOnly } = require('../utils/dateOnly');
+const {
+  listActiveRequirements,
+  normalizeSelectedIds,
+  saveRegistrationChecklist,
+  loadChecklistsByRegistrationIds,
+} = require('./vehicleReadinessService');
 const chatService = require('./chatService');
 
 async function syncChatAfterRegistrationChange(tripId, userId, status) {
@@ -135,6 +141,13 @@ async function mapTrip(row, { userId = null, actor = null } = {}) {
     [row.id, participantStatuses],
   );
 
+  let readinessByReg = new Map();
+  if (showManagedParticipants && participants.rows.length) {
+    readinessByReg = await loadChecklistsByRegistrationIds(
+      participants.rows.map((p) => p.registration_id),
+    );
+  }
+
   let organizer = null;
   if (row.organizer_id) {
     const org = await query(
@@ -200,15 +213,21 @@ async function mapTrip(row, { userId = null, actor = null } = {}) {
     organizer,
     organizerId: row.organizer_id,
     createdBy: row.created_by || null,
-    participants: participants.rows.map((p) => ({
-      id: p.id,
-      name: `${p.first_name} ${p.last_name}`.trim(),
-      avatar: p.avatar_url,
-      vehicle: p.vehicle,
-      registrationId: p.registration_id,
-      registrationStatus: p.registration_status,
-      registeredAt: p.registered_at,
-    })),
+    participants: participants.rows.map((p) => {
+      const readinessChecklist = showManagedParticipants
+        ? readinessByReg.get(p.registration_id) || []
+        : undefined;
+      return {
+        id: p.id,
+        name: `${p.first_name} ${p.last_name}`.trim(),
+        avatar: p.avatar_url,
+        vehicle: p.vehicle,
+        registrationId: p.registration_id,
+        registrationStatus: p.registration_status,
+        registeredAt: p.registered_at,
+        ...(readinessChecklist ? { readinessChecklist } : {}),
+      };
+    }),
     status: clientStatus,
     publishStatus: row.status,
     myRegistration,
@@ -945,6 +964,13 @@ async function joinTrip(tripId, user, req) {
     throw new AppError(403, 'FORBIDDEN', 'Only approved members can join trips');
   }
 
+  // Optional checklist: 0..N selections allowed; never required to join.
+  const catalog = await listActiveRequirements();
+  const selectedRequirementIds = normalizeSelectedIds(
+    req?.body?.requirementIds,
+    catalog,
+  );
+
   const requiresApproval = await getBoolSetting('trip_join_requires_approval', false);
   const allowWaitlist = await getBoolSetting('trip_join_allow_waitlist', false);
 
@@ -1055,6 +1081,12 @@ async function joinTrip(tripId, user, req) {
       registration = inserted.rows[0];
     }
 
+    await saveRegistrationChecklist(
+      client,
+      registration.id,
+      selectedRequirementIds,
+    );
+
     return { registration, trip, status };
   });
 
@@ -1063,7 +1095,11 @@ async function joinTrip(tripId, user, req) {
     action: 'trip.join',
     entityType: 'trip_registrations',
     entityId: registration.id,
-    metadata: { tripId, status },
+    metadata: {
+      tripId,
+      status,
+      readinessSelectedCount: selectedRequirementIds.length,
+    },
     req,
   });
 
@@ -1494,6 +1530,7 @@ module.exports = {
   assertCanViewAssignedTrip,
   mapTrip,
   getTripRow,
+  listActiveRequirements,
 };
 
 async function listRegistrations({

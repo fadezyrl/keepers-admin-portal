@@ -5,9 +5,79 @@ const { createNotification } = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
 const { getAdminClient } = require('../config/supabase');
+const { getStats } = require('./memberProgressService');
 
 function membershipLabel(row) {
   return row.membership_name || row.membership_code || null;
+}
+
+/** VIN is restricted: self or members.manage only. Never rely on UI hiding alone. */
+function canViewVin(viewer, memberId) {
+  return Boolean(
+    viewer &&
+      (viewer.id === memberId || hasPermission(viewer, 'members.manage')),
+  );
+}
+
+function sanitizeVehicleForViewer(vehicle, allowVin) {
+  if (!vehicle) return null;
+  const out = {
+    id: vehicle.id,
+    manufacturer: vehicle.manufacturer,
+    model: vehicle.model,
+    year: vehicle.year,
+    image: vehicle.image,
+    is_primary: vehicle.is_primary,
+  };
+  if (allowVin && vehicle.vin) {
+    out.vin = vehicle.vin;
+  }
+  return out;
+}
+
+/**
+ * Historical progression only — never invent a count from the current level/role.
+ * Membership: times progressed TO each level via membership_history.
+ * Roles: completed past tenures (role remove audit events).
+ */
+async function getMembershipProgressionCounts(memberId) {
+  const [levelRes, roleRes] = await Promise.all([
+    query(
+      `SELECT ml.code, COUNT(*)::INT AS times
+       FROM membership_history mh
+       JOIN membership_levels ml ON ml.id = mh.to_level_id
+       WHERE mh.member_id = $1
+         AND ml.code IN ('junior', 'intermediate', 'advanced')
+       GROUP BY ml.code`,
+      [memberId],
+    ),
+    query(
+      `SELECT metadata->>'role' AS role_code, COUNT(*)::INT AS times
+       FROM audit_logs
+       WHERE entity_type = 'user_roles'
+         AND entity_id = $1
+         AND action = 'member.role.remove'
+         AND metadata->>'role' IN ('pre_marshall', 'marshall')
+       GROUP BY metadata->>'role'`,
+      [memberId],
+    ),
+  ]);
+
+  const levels = { junior: 0, intermediate: 0, advanced: 0 };
+  for (const row of levelRes.rows) {
+    if (levels[row.code] !== undefined) {
+      levels[row.code] = Number(row.times || 0);
+    }
+  }
+
+  const roles = { pre_marshall: 0, marshall: 0 };
+  for (const row of roleRes.rows) {
+    if (roles[row.role_code] !== undefined) {
+      roles[row.role_code] = Number(row.times || 0);
+    }
+  }
+
+  return { levels, roles };
 }
 
 async function listMembers({
@@ -152,8 +222,15 @@ async function getMemberById(id, viewer) {
   const socialMap = {};
   for (const s of social.rows) socialMap[s.platform] = s.handle_or_url;
 
-  const showVehicle = mp.privacy_show_vehicle || viewer?.id === id || hasPermission(viewer, 'members.manage');
-  const showSocial = mp.privacy_show_social || viewer?.id === id || hasPermission(viewer, 'members.manage');
+  const showVehicle =
+    mp.privacy_show_vehicle ||
+    viewer?.id === id ||
+    hasPermission(viewer, 'members.manage');
+  const showSocial =
+    mp.privacy_show_social ||
+    viewer?.id === id ||
+    hasPermission(viewer, 'members.manage');
+  const allowVin = canViewVin(viewer, id);
 
   const tripsCompleted = await query(
     `SELECT t.id, t.title, t.trip_date, t.destination
@@ -166,6 +243,14 @@ async function getMemberById(id, viewer) {
      ORDER BY t.trip_date DESC`,
     [id],
   );
+
+  const [stats, progression] = await Promise.all([
+    getStats(id),
+    getMembershipProgressionCounts(id),
+  ]);
+
+  const rawVehicle = showVehicle ? vehicle.rows[0] || null : null;
+  const rawVehicles = showVehicle ? vehicle.rows : [];
 
   return {
     id: mp.id,
@@ -185,13 +270,29 @@ async function getMemberById(id, viewer) {
     membershipCode: mp.membership_code,
     membershipRank: mp.membership_rank,
     roles: roles.rows,
-    vehicle: showVehicle ? vehicle.rows[0] || null : null,
-    vehicles: showVehicle ? vehicle.rows : [],
+    vehicle: sanitizeVehicleForViewer(rawVehicle, allowVin),
+    vehicles: rawVehicles.map((v) => sanitizeVehicleForViewer(v, allowVin)),
     social: showSocial ? socialMap : {},
     emergencyContacts: emergency,
     privacy: {
       showVehicle: mp.privacy_show_vehicle,
       showSocial: mp.privacy_show_social,
+    },
+    ratings: {
+      ratingsReceived: stats.ratingsReceived,
+      overallAverage: stats.overallAverage,
+      categoryAverages: stats.categoryAverages,
+    },
+    attendance: {
+      total: stats.attendedDrives,
+      completedTrips: stats.completedTrips,
+    },
+    progressionHistory: {
+      junior: progression.levels.junior,
+      intermediate: progression.levels.intermediate,
+      advanced: progression.levels.advanced,
+      preMarshall: progression.roles.pre_marshall,
+      marshall: progression.roles.marshall,
     },
     completedTripHistory: tripsCompleted.rows,
     createdAt: mp.created_at,

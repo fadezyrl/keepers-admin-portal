@@ -138,6 +138,13 @@ export type Trip = {
     avatar?: string | null;
     vehicle?: string | null;
     registrationStatus: string;
+    readinessChecklist?: Array<{
+      id: string;
+      code: string;
+      label: string;
+      selected: boolean;
+      submittedAt?: string;
+    }>;
   }>;
   status: string;
   publishStatus?: string;

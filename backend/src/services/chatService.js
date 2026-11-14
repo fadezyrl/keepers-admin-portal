@@ -627,8 +627,11 @@ async function ackDelivered(conversationId, actor, messageIds = []) {
 
   for (const row of res.rows) {
     emitToConversation(conversationId, 'chat:receipt.update', {
+      conversationId,
       messageId: row.message_id,
+      messageIds: [row.message_id],
       userId: actor.id,
+      status: 'delivered',
       deliveredAt: new Date().toISOString(),
     });
   }
@@ -682,6 +685,7 @@ async function ackRead(conversationId, actor, { upToMessageId = null } = {}) {
   emitToConversation(conversationId, 'chat:receipt.update', {
     conversationId,
     userId: actor.id,
+    status: 'read',
     readAt: new Date().toISOString(),
     messageIds: result.rows.map((r) => r.message_id),
   });
