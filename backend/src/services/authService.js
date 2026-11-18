@@ -307,7 +307,9 @@ async function requestPasswordReset(email, redirectTo) {
     throw new AppError(503, 'AUTH_NOT_CONFIGURED', 'Supabase Auth is not configured');
   }
   const target =
-    redirectTo || process.env.MOBILE_RESET_REDIRECT_URL || 'keepers://auth/reset-password';
+    redirectTo ||
+    process.env.MOBILE_RESET_REDIRECT_URL ||
+    'https://keepers-admin-portal.vercel.app/auth/mobile-reset';
   // Always return success to avoid email enumeration
   await anon.auth.resetPasswordForEmail(email, { redirectTo: target });
   return { message: 'If an account exists, a password reset link has been sent' };
