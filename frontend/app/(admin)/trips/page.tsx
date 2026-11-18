@@ -16,6 +16,7 @@ import { DataTable, type DataColumn } from "@/components/ui/DataTable";
 import { FilterBar, SearchInput } from "@/components/ui/FilterBar";
 import { RowActions } from "@/components/ui/RowActions";
 import { TripCreateDrawer, TripQuickDrawer } from "@/components/admin/TripDrawer";
+import { TRIP_CATEGORIES } from "@/lib/tripCategories";
 
 const PAGE_SIZE = 20;
 
@@ -24,6 +25,7 @@ export default function TripsPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
+  const [category, setCategory] = useState("");
   const [page, setPage] = useState(1);
   const debouncedQ = useDebouncedValue(q, 300);
   const [createOpen, setCreateOpen] = useState(false);
@@ -34,12 +36,13 @@ export default function TripsPage() {
     () => ({
       q: debouncedQ.trim() || undefined,
       status: status || undefined,
+      category: category || undefined,
       includeDrafts: true,
       filter: "all",
       page,
       limit: PAGE_SIZE,
     }),
-    [debouncedQ, status, page],
+    [debouncedQ, status, category, page],
   );
 
   const path = useMemo(() => `/trips${buildQuery(listParams)}`, [listParams]);
@@ -132,6 +135,11 @@ export default function TripsPage() {
           {t.maxParticipants ? ` / ${t.maxParticipants}` : ""}
         </>
       ),
+    },
+    {
+      key: "category",
+      header: "Category",
+      cell: (t) => t.category || "—",
     },
     {
       key: "difficulty",
@@ -227,6 +235,21 @@ export default function TripsPage() {
               <option value="published">Published</option>
               <option value="completed">Completed</option>
               <option value="cancelled">Cancelled</option>
+            </select>
+            <select
+              className="admin-select max-w-[200px]"
+              value={category}
+              onChange={(e) => {
+                setCategory(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">All categories</option>
+              {TRIP_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
             </select>
           </FilterBar>
         }

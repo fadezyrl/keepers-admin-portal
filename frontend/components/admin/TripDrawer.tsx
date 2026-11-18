@@ -15,6 +15,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { DrawerSkeleton } from "@/components/ui/Skeleton";
 import { FormField } from "@/components/ui/FormField";
 import { MediaPicker } from "@/components/ui/MediaPicker";
+import { TRIP_CATEGORIES } from "@/lib/tripCategories";
 
 const emptyForm = {
   title: "",
@@ -24,6 +25,7 @@ const emptyForm = {
   description: "",
   meetingPoint: "",
   difficulty: "Moderate",
+  category: "Trips & Events",
   maxParticipants: "20",
   coverImage: "",
   publish: false,
@@ -58,6 +60,7 @@ export function TripCreateDrawer({
         description: form.description || undefined,
         meetingPoint: form.meetingPoint || undefined,
         difficulty: form.difficulty,
+        category: form.category,
         maxParticipants: Number(form.maxParticipants) || 20,
         coverImage: form.coverImage.trim() || undefined,
         publish: form.publish,
@@ -136,6 +139,20 @@ export function TripCreateDrawer({
             <option>Expert</option>
           </select>
         </FormField>
+        <FormField label="Category">
+          <select
+            className="admin-select"
+            required
+            value={form.category}
+            onChange={(e) => setForm({ ...form, category: e.target.value })}
+          >
+            {TRIP_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </FormField>
         <FormField label="Max participants">
           <input
             className="admin-input"
@@ -199,6 +216,7 @@ export function TripQuickDrawer({
     destination: "",
     meetingPoint: "",
     description: "",
+    category: "Trips & Events",
     coverImage: "",
   });
   const hydratedFor = useRef<string | null>(null);
@@ -228,6 +246,7 @@ export function TripQuickDrawer({
       destination: data.destination || "",
       meetingPoint: data.meetingPoint || "",
       description: data.description || "",
+      category: data.category || "Trips & Events",
       coverImage: data.coverImage || "",
     });
   }, [data, active]);
@@ -263,6 +282,7 @@ export function TripQuickDrawer({
         destination: edit.destination.trim(),
         meetingPoint: edit.meetingPoint || "",
         description: edit.description || "",
+        category: edit.category,
         coverImage: edit.coverImage.trim() || undefined,
       });
       const next = { ...data, ...updated, ...edit };
@@ -373,6 +393,19 @@ export function TripQuickDrawer({
                 value={edit.meetingPoint}
                 onChange={(e) => setEdit({ ...edit, meetingPoint: e.target.value })}
               />
+            </FormField>
+            <FormField label="Category" className="sm:col-span-2">
+              <select
+                className="admin-select"
+                value={edit.category}
+                onChange={(e) => setEdit({ ...edit, category: e.target.value })}
+              >
+                {TRIP_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </FormField>
             <FormField label="Description" className="sm:col-span-2">
               <textarea

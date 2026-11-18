@@ -18,6 +18,11 @@ const {
   loadChecklistsByRegistrationIds,
 } = require('./vehicleReadinessService');
 const chatService = require('./chatService');
+const {
+  TRIP_CATEGORIES,
+  assertTripCategory,
+  inferCategoryFromLegacy,
+} = require('../constants/tripCategories');
 
 async function syncChatAfterRegistrationChange(tripId, userId, status) {
   try {
@@ -191,7 +196,14 @@ async function mapTrip(row, { userId = null, actor = null } = {}) {
     date: toDateOnly(row.trip_date),
     time: row.trip_time,
     difficulty: row.difficulty,
-    tripType: row.trip_type,
+    category:
+      row.category ||
+      inferCategoryFromLegacy({
+        tripType: row.trip_type,
+        title: row.title,
+        destination: row.destination,
+      }),
+    tripType: row.trip_type || row.category || null,
     requiredMembership: row.required_membership_name || row.required_membership_code,
     requiredMembershipCode: row.required_membership_code,
     minTripsRequired: row.min_trips_required,
@@ -307,6 +319,7 @@ async function listTrips({
   filter = 'all',
   q,
   status,
+  category,
   from,
   to,
   userId,
@@ -329,6 +342,15 @@ async function listTrips({
     where.push(
       `(t.title ILIKE $${params.length} OR t.destination ILIKE $${params.length} OR t.description ILIKE $${params.length})`,
     );
+  }
+  if (category) {
+    try {
+      assertTripCategory(category, { required: true });
+    } catch (err) {
+      throw new AppError(400, err.code || 'VALIDATION_ERROR', err.message);
+    }
+    params.push(category);
+    where.push(`t.category = $${params.length}`);
   }
   if (from) {
     params.push(from);
@@ -399,16 +421,24 @@ async function createTrip(payload, actor, req) {
   const organizerId = payload.organizerId || actor.id;
   const tripTime = normalizeTripTime(payload.time);
 
+  let category;
+  try {
+    category = assertTripCategory(payload.category, { required: true });
+  } catch (err) {
+    throw new AppError(400, err.code || 'VALIDATION_ERROR', err.message);
+  }
+  const tripType = payload.tripType || category;
+
   const res = await query(
     `INSERT INTO trips (
       title, description, destination, meeting_point, trip_date, trip_time,
-      difficulty, trip_type, required_membership_level_id, min_trips_required,
+      difficulty, trip_type, category, required_membership_level_id, min_trips_required,
       cover_image_url, max_participants, vehicle_requirements, instructions,
       route_summary, location_label, latitude, longitude, organizer_id,
       created_by, updated_by, status, published_at
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$20,$21,
-      CASE WHEN $21 = 'published' THEN NOW() ELSE NULL END
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$21,$22,
+      CASE WHEN $22 = 'published' THEN NOW() ELSE NULL END
     ) RETURNING id`,
     [
       payload.title,
@@ -418,7 +448,8 @@ async function createTrip(payload, actor, req) {
       payload.date,
       tripTime,
       payload.difficulty || 'Moderate',
-      payload.tripType || null,
+      tripType,
+      category,
       requiredLevelId,
       payload.minTripsRequired || 0,
       payload.coverImage || null,
@@ -510,6 +541,17 @@ async function updateTrip(id, payload, actor, req) {
     }
   }
 
+  let nextCategory = null;
+  if (payload.category != null && payload.category !== '') {
+    try {
+      nextCategory = assertTripCategory(payload.category, { required: true });
+    } catch (err) {
+      throw new AppError(400, err.code || 'VALIDATION_ERROR', err.message);
+    }
+  }
+  const nextTripType =
+    payload.tripType ?? (nextCategory != null ? nextCategory : null);
+
   await query(
     `UPDATE trips SET
       title = COALESCE($1, title),
@@ -520,19 +562,20 @@ async function updateTrip(id, payload, actor, req) {
       trip_time = COALESCE($6, trip_time),
       difficulty = COALESCE($7, difficulty),
       trip_type = COALESCE($8, trip_type),
-      required_membership_level_id = COALESCE($9, required_membership_level_id),
-      min_trips_required = COALESCE($10, min_trips_required),
-      cover_image_url = COALESCE($11, cover_image_url),
-      max_participants = COALESCE($12, max_participants),
-      vehicle_requirements = COALESCE($13, vehicle_requirements),
-      instructions = COALESCE($14, instructions),
-      route_summary = COALESCE($15, route_summary),
-      location_label = COALESCE($16, location_label),
-      latitude = COALESCE($17, latitude),
-      longitude = COALESCE($18, longitude),
-      organizer_id = COALESCE($19, organizer_id),
-      updated_by = $20
-     WHERE id = $21`,
+      category = COALESCE($9, category),
+      required_membership_level_id = COALESCE($10, required_membership_level_id),
+      min_trips_required = COALESCE($11, min_trips_required),
+      cover_image_url = COALESCE($12, cover_image_url),
+      max_participants = COALESCE($13, max_participants),
+      vehicle_requirements = COALESCE($14, vehicle_requirements),
+      instructions = COALESCE($15, instructions),
+      route_summary = COALESCE($16, route_summary),
+      location_label = COALESCE($17, location_label),
+      latitude = COALESCE($18, latitude),
+      longitude = COALESCE($19, longitude),
+      organizer_id = COALESCE($20, organizer_id),
+      updated_by = $21
+     WHERE id = $22`,
     [
       payload.title ?? null,
       payload.description ?? null,
@@ -541,7 +584,8 @@ async function updateTrip(id, payload, actor, req) {
       payload.date ?? null,
       payload.time ?? null,
       payload.difficulty ?? null,
-      payload.tripType ?? null,
+      nextTripType,
+      nextCategory,
       requiredLevelId,
       payload.minTripsRequired ?? null,
       payload.coverImage ?? null,
@@ -1531,6 +1575,7 @@ module.exports = {
   mapTrip,
   getTripRow,
   listActiveRequirements,
+  TRIP_CATEGORIES,
 };
 
 async function listRegistrations({

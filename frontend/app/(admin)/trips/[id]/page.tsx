@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Alert } from "@/components/ui/Alert";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TRIP_CATEGORIES } from "@/lib/tripCategories";
 
 function TripDetailInner() {
   const params = useParams<{ id: string }>();
@@ -190,6 +191,7 @@ function TripDetailInner() {
         description: String(fd.get("description") || ""),
         destination: String(fd.get("destination") || data.destination),
         meetingPoint: String(fd.get("meetingPoint") || ""),
+        category: String(fd.get("category") || data.category || "Trips & Events"),
         instructions: String(fd.get("instructions") || ""),
         coverImage: coverImage.trim() || String(fd.get("coverImage") || data.coverImage || "") || undefined,
       });
@@ -288,6 +290,22 @@ function TripDetailInner() {
                 name="meetingPoint"
                 defaultValue={data.meetingPoint || ""}
               />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Category
+              </span>
+              <select
+                className="admin-select"
+                name="category"
+                defaultValue={data.category || "Trips & Events"}
+              >
+                {TRIP_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="block">
               <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">

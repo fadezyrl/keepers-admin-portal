@@ -101,6 +101,7 @@ export type Trip = {
   date: string;
   time?: string | null;
   difficulty?: string;
+  category?: string | null;
   tripType?: string | null;
   requiredMembership?: string | null;
   requiredMembershipCode?: string | null;

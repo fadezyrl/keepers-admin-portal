@@ -23,6 +23,7 @@ router.get(
       filter: req.query.filter || 'all',
       q: req.query.q,
       status: req.query.status,
+      category: req.query.category,
       from: req.query.from,
       to: req.query.to,
       userId: req.user.id,
@@ -31,6 +32,13 @@ router.get(
       limit: Number(req.query.limit || 50),
     });
     return ok(res, data);
+  }),
+);
+
+router.get(
+  '/categories',
+  asyncHandler(async (_req, res) => {
+    return ok(res, { items: tripService.TRIP_CATEGORIES });
   }),
 );
 
@@ -107,6 +115,15 @@ router.get(
   asyncHandler(async (_req, res) => {
     const items = await tripService.listActiveRequirements();
     return ok(res, { items });
+  }),
+);
+
+router.get(
+  '/:id/weather',
+  asyncHandler(async (req, res) => {
+    const weatherService = require('../services/weatherService');
+    const data = await weatherService.getTripWeather(req.params.id);
+    return ok(res, data);
   }),
 );
 

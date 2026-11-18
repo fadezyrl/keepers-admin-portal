@@ -70,6 +70,12 @@ const tripSchema = z.object({
     timeHm.optional(),
   ),
   difficulty: z.enum(['Easy', 'Moderate', 'Advanced', 'Expert']).optional(),
+  category: z.enum([
+    'Desert Drives',
+    'Camping Drives',
+    'Mountain Drives',
+    'Trips & Events',
+  ]),
   tripType: z.string().optional(),
   requiredMembership: z.string().optional(),
   requiredMembershipCode: z.string().optional(),
