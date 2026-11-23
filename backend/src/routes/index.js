@@ -7,6 +7,7 @@ const contentRoutes = require('./contentRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
 const eventRoutes = require('./eventRoutes');
 const chatRoutes = require('./chatRoutes');
+const progressionRoutes = require('./progressionRoutes');
 
 const router = express.Router();
 
@@ -29,5 +30,6 @@ router.use('/content', contentRoutes);
 router.use('/events', eventRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/chat', chatRoutes);
+router.use('/progression', progressionRoutes);
 
 module.exports = router;

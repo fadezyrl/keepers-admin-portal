@@ -5,7 +5,10 @@ const { AppError } = require('../utils/AppError');
 
 async function loadAuthContext(userId) {
   const profileRes = await query(
-    `SELECT mp.*, ml.code AS membership_code, ml.name AS membership_name, ml.rank AS membership_rank
+    `SELECT mp.*, ml.code AS membership_code, ml.name AS membership_name,
+            ml.display_name AS membership_display_name,
+            ml.rank AS membership_rank, ml.rank_group AS membership_rank_group,
+            ml.level_number AS membership_level_number
      FROM member_profiles mp
      LEFT JOIN membership_levels ml ON ml.id = mp.membership_level_id
      WHERE mp.id = $1 AND mp.deleted_at IS NULL`,

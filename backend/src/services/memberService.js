@@ -8,7 +8,7 @@ const { getAdminClient } = require('../config/supabase');
 const { getStats } = require('./memberProgressService');
 
 function membershipLabel(row) {
-  return row.membership_name || row.membership_code || null;
+  return row.membership_display_name || row.membership_name || row.membership_code || null;
 }
 
 /** VIN is restricted: self or members.manage only. Never rely on UI hiding alone. */
@@ -43,12 +43,12 @@ function sanitizeVehicleForViewer(vehicle, allowVin) {
 async function getMembershipProgressionCounts(memberId) {
   const [levelRes, roleRes] = await Promise.all([
     query(
-      `SELECT ml.code, COUNT(*)::INT AS times
+      `SELECT ml.rank_group AS code, COUNT(*)::INT AS times
        FROM membership_history mh
        JOIN membership_levels ml ON ml.id = mh.to_level_id
        WHERE mh.member_id = $1
-         AND ml.code IN ('junior', 'intermediate', 'advanced')
-       GROUP BY ml.code`,
+         AND ml.rank_group IN ('junior', 'intermediate', 'advanced')
+       GROUP BY ml.rank_group`,
       [memberId],
     ),
     query(
@@ -109,8 +109,18 @@ async function listMembers({
     );
   }
   if (membership) {
-    params.push(membership.toLowerCase());
-    where.push(`ml.code = $${params.length}`);
+    const { resolveLevelCode } = require('./progressionLevels');
+    const raw = String(membership).trim().toLowerCase();
+    // Support rank-group filters from mobile directory (Junior / Intermediate / Advanced)
+    // and exact level codes.
+    if (['junior', 'intermediate', 'advanced', 'intermediate_plus', 'advanced_plus', 'pre_marshall', 'marshall'].includes(raw)) {
+      params.push(raw);
+      where.push(`ml.rank_group = $${params.length}`);
+    } else {
+      const code = resolveLevelCode(membership) || raw;
+      params.push(code);
+      where.push(`(ml.code = $${params.length} OR lower(ml.name) = $${params.length} OR lower(ml.display_name) = $${params.length})`);
+    }
   }
   if (role) {
     params.push(role);
@@ -127,6 +137,8 @@ async function listMembers({
             mp.nationality, mp.avatar_url, mp.status, mp.completed_trips, mp.created_at,
             mp.deleted_at,
             ml.code AS membership_code, ml.name AS membership_name,
+            ml.display_name AS membership_display_name,
+            ml.rank AS membership_rank, ml.rank_group AS membership_rank_group,
             COALESCE(
               (SELECT json_agg(json_build_object('code', r.code, 'name', r.name))
                FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = mp.id),
@@ -185,7 +197,10 @@ async function listMembers({
 async function getMemberById(id, viewer) {
   const includeDeleted = hasPermission(viewer, 'members.manage');
   const res = await query(
-    `SELECT mp.*, ml.code AS membership_code, ml.name AS membership_name, ml.rank AS membership_rank
+    `SELECT mp.*, ml.code AS membership_code, ml.name AS membership_name,
+            ml.display_name AS membership_display_name,
+            ml.rank AS membership_rank, ml.rank_group AS membership_rank_group,
+            ml.level_number AS membership_level_number
      FROM member_profiles mp
      LEFT JOIN membership_levels ml ON ml.id = mp.membership_level_id
      WHERE mp.id = $1 ${includeDeleted ? '' : 'AND mp.deleted_at IS NULL'}`,

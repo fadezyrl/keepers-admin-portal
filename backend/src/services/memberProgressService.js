@@ -1,5 +1,6 @@
 const { query } = require('../config/db');
 const { AppError } = require('../utils/AppError');
+const { formatLevel, RANK_GROUP_LABELS } = require('./progressionLevels');
 
 const TREND_LIMIT = 8;
 
@@ -18,8 +19,11 @@ function round1(value) {
 async function getMemberProfile(userId) {
   const res = await query(
     `SELECT mp.id, mp.first_name, mp.last_name, mp.completed_trips,
-            mp.membership_level_id,
-            ml.code AS membership_code, ml.name AS membership_name, ml.rank AS membership_rank,
+            mp.membership_level_id, mp.last_progression_at,
+            ml.code AS membership_code, ml.name AS membership_name,
+            ml.display_name AS membership_display_name,
+            ml.rank AS membership_rank, ml.rank_group AS membership_rank_group,
+            ml.level_number AS membership_level_number,
             ml.description AS membership_description
      FROM member_profiles mp
      LEFT JOIN membership_levels ml ON ml.id = mp.membership_level_id
@@ -32,7 +36,7 @@ async function getMemberProfile(userId) {
 
 async function getLevels() {
   const res = await query(
-    `SELECT id, code, name, rank, description,
+    `SELECT id, code, name, display_name, rank, rank_group, level_number, description,
             min_completed_trips, min_average_rating
      FROM membership_levels
      WHERE is_active = TRUE
@@ -155,8 +159,8 @@ async function getUpgradeState(userId, profile, levels, stats) {
   const upgrades = await query(
     `SELECT ur.id, ur.status, ur.recommendation_notes, ur.decision_notes,
             ur.created_at, ur.reviewed_at,
-            fl.code AS from_code, fl.name AS from_name,
-            tl.code AS to_code, tl.name AS to_name,
+            fl.code AS from_code, COALESCE(fl.display_name, fl.name) AS from_name,
+            tl.code AS to_code, COALESCE(tl.display_name, tl.name) AS to_name,
             rb.first_name AS recommender_first_name,
             rb.last_name AS recommender_last_name
      FROM membership_upgrade_requests ur
@@ -171,8 +175,8 @@ async function getUpgradeState(userId, profile, levels, stats) {
 
   const history = await query(
     `SELECT mh.id, mh.change_reason, mh.created_at,
-            fl.code AS from_code, fl.name AS from_name,
-            tl.code AS to_code, tl.name AS to_name
+            fl.code AS from_code, COALESCE(fl.display_name, fl.name) AS from_name,
+            tl.code AS to_code, COALESCE(tl.display_name, tl.name) AS to_name
      FROM membership_history mh
      LEFT JOIN membership_levels fl ON fl.id = mh.from_level_id
      JOIN membership_levels tl ON tl.id = mh.to_level_id
@@ -255,35 +259,26 @@ async function getUpgradeState(userId, profile, levels, stats) {
   else if (latest?.status === 'rejected') upgradeStatus = 'rejected';
   else if (eligibleForRecommendation) upgradeStatus = 'awaiting_recommendation';
 
+  const currentFormatted = current
+    ? formatLevel(current)
+    : profile.membership_code
+      ? formatLevel({
+          id: profile.membership_level_id,
+          code: profile.membership_code,
+          name: profile.membership_name,
+          display_name: profile.membership_name,
+          rank: profile.membership_rank,
+          description: profile.membership_description,
+        })
+      : null;
+
   return {
-    currentLevel: current
-      ? {
-          id: current.id,
-          code: current.code,
-          name: current.name,
-          rank: current.rank,
-          description: current.description,
-        }
-      : profile.membership_code
-        ? {
-            id: profile.membership_level_id,
-            code: profile.membership_code,
-            name: profile.membership_name,
-            rank: profile.membership_rank,
-            description: profile.membership_description,
-          }
-        : null,
-    nextLevel: next
-      ? {
-          id: next.id,
-          code: next.code,
-          name: next.name,
-          rank: next.rank,
-          description: next.description,
-          minCompletedTrips: Number(next.min_completed_trips || 0),
-          minAverageRating: num(next.min_average_rating),
-        }
-      : null,
+    currentLevel: currentFormatted,
+    nextLevel: next ? formatLevel(next) : null,
+    position: currentFormatted?.rank || null,
+    totalLevels: levels.length,
+    rankGroupLabel: currentFormatted?.rankGroupLabel || null,
+    dateAchieved: profile.last_progression_at || null,
     completedTrips: stats.completedTrips,
     remainingDrives,
     progressRatio,
@@ -364,14 +359,11 @@ async function getMyProgress(userId) {
       criteria: stats.criteria,
     },
     progression,
-    levels: levels.map((l) => ({
-      id: l.id,
-      code: l.code,
-      name: l.name,
-      rank: l.rank,
-      description: l.description,
-      minCompletedTrips: Number(l.min_completed_trips || 0),
-      minAverageRating: num(l.min_average_rating),
+    levels: levels.map((l) => formatLevel(l)),
+    rankGroups: Object.keys(RANK_GROUP_LABELS).map((code) => ({
+      code,
+      label: RANK_GROUP_LABELS[code],
+      levels: levels.filter((l) => l.rank_group === code).map((l) => formatLevel(l)),
     })),
   };
 }

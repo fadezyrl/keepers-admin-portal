@@ -4,6 +4,11 @@ const { writeAudit } = require('./auditService');
 const { createNotification, notifyMany, listAdminUserIds } = require('./notificationService');
 const { presets: cachePresets } = require('./cacheInvalidationService');
 const { hasPermission } = require('../middleware/auth');
+const { resolveLevelCode } = require('./progressionLevels');
+const {
+  maybeCreateRolePromotionFromLevel,
+  notifyAdminsOfRolePromotion,
+} = require('./rolePromotionService');
 
 async function listCriteria({ includeInactive = false } = {}) {
   const res = await query(
@@ -172,20 +177,81 @@ async function createRating(payload, actor, req) {
     }
 
     let upgradeRequest = null;
-    if (recommendUpgradeTo) {
+    const wantsUpgrade =
+      Boolean(recommendUpgradeTo) ||
+      payload.recommendUpgrade === true ||
+      payload.recommendUpgrade === 'true';
+
+    if (wantsUpgrade) {
       if (!hasPermission(actor, 'upgrades.recommend')) {
         throw new AppError(403, 'FORBIDDEN', 'Cannot recommend upgrades');
       }
 
       const member = await client.query(
-        `SELECT membership_level_id FROM member_profiles WHERE id = $1`,
+        `SELECT mp.membership_level_id, ml.rank AS current_rank, ml.code AS current_code
+         FROM member_profiles mp
+         LEFT JOIN membership_levels ml ON ml.id = mp.membership_level_id
+         WHERE mp.id = $1
+         FOR UPDATE OF mp`,
         [memberId],
       );
-      const toLevel = await client.query(
-        `SELECT id FROM membership_levels WHERE lower(code) = lower($1) OR lower(name) = lower($1)`,
-        [recommendUpgradeTo],
+      if (!member.rows[0]) {
+        throw new AppError(404, 'NOT_FOUND', 'Member not found');
+      }
+
+      const pending = await client.query(
+        `SELECT id FROM membership_upgrade_requests
+         WHERE member_id = $1 AND status = 'pending'`,
+        [memberId],
       );
-      if (!toLevel.rows[0]) throw new AppError(400, 'INVALID_LEVEL', 'Unknown membership level');
+      if (pending.rows[0]) {
+        throw new AppError(
+          409,
+          'PENDING_UPGRADE_EXISTS',
+          'This member already has a pending upgrade recommendation',
+        );
+      }
+
+      const currentRank = Number(member.rows[0].current_rank);
+      if (!Number.isFinite(currentRank)) {
+        throw new AppError(
+          400,
+          'NO_CURRENT_LEVEL',
+          'Member has no driving level assigned; Admin must set Junior 1 first',
+        );
+      }
+
+      const nextLevel = await client.query(
+        `SELECT id, code, name, display_name, rank
+         FROM membership_levels
+         WHERE is_active = TRUE AND rank = $1`,
+        [currentRank + 1],
+      );
+      if (!nextLevel.rows[0]) {
+        throw new AppError(
+          400,
+          'MAX_LEVEL',
+          'Member is already at the highest driving level',
+        );
+      }
+
+      // If Marshall named a level, it must be exactly the next sequential level
+      if (recommendUpgradeTo && recommendUpgradeTo !== true) {
+        const requestedCode = resolveLevelCode(recommendUpgradeTo);
+        const next = nextLevel.rows[0];
+        const allowed =
+          requestedCode === next.code ||
+          String(recommendUpgradeTo).toLowerCase() === String(next.name).toLowerCase() ||
+          String(recommendUpgradeTo).toLowerCase() ===
+            String(next.display_name || '').toLowerCase();
+        if (!allowed) {
+          throw new AppError(
+            400,
+            'SKIP_NOT_ALLOWED',
+            `Only the next level can be recommended: ${next.display_name || next.name}`,
+          );
+        }
+      }
 
       const upgrade = await client.query(
         `INSERT INTO membership_upgrade_requests (
@@ -195,7 +261,7 @@ async function createRating(payload, actor, req) {
         [
           memberId,
           member.rows[0]?.membership_level_id || null,
-          toLevel.rows[0].id,
+          nextLevel.rows[0].id,
           actor.id,
           tripId,
           ratingId,
@@ -237,7 +303,7 @@ async function createRating(payload, actor, req) {
       {
         type: 'upgrade',
         title: 'Upgrade recommendation pending',
-        body: 'A Marshall recommended a membership upgrade for review.',
+        body: 'A Marshall recommended a driving-level upgrade for review.',
         data: {
           upgradeRequestId: rating.upgradeRequest.id,
           tripId,
@@ -247,6 +313,18 @@ async function createRating(payload, actor, req) {
         idempotencyKey: `upgrade.recommend:${rating.upgradeRequest.id}`,
       },
     );
+    await createNotification({
+      userId: memberId,
+      type: 'upgrade',
+      title: 'Promotion request submitted',
+      body: 'A Marshall recommended you for the next driving level. Admin review is pending.',
+      data: {
+        upgradeRequestId: rating.upgradeRequest.id,
+        tripId,
+        screen: 'keepers://progress',
+      },
+      idempotencyKey: `upgrade.recommend.member:${rating.upgradeRequest.id}`,
+    });
   }
 
   return rating;
@@ -275,7 +353,9 @@ async function listUpgradeRequests({
     `SELECT ur.*,
             mp.first_name AS member_first_name, mp.last_name AS member_last_name, mp.username AS member_username,
             rb.first_name AS recommender_first_name, rb.last_name AS recommender_last_name,
-            fl.name AS from_level_name, tl.name AS to_level_name,
+            COALESCE(fl.display_name, fl.name) AS from_level_name,
+            COALESCE(tl.display_name, tl.name) AS to_level_name,
+            tl.code AS to_level_code, fl.code AS from_level_code,
             t.title AS trip_title
      FROM membership_upgrade_requests ur
      JOIN member_profiles mp ON mp.id = ur.member_id
@@ -326,11 +406,15 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
     throw new AppError(403, 'FORBIDDEN', 'Cannot review your own upgrade recommendation');
   }
 
+  let rolePromotion = null;
+  let approvedToLevel = null;
+
   await withTransaction(async (client) => {
     await client.query(
       `UPDATE membership_upgrade_requests SET
-         status = $1, reviewed_by = $2, reviewed_at = NOW(), decision_notes = $3
-       WHERE id = $4`,
+         status = $1, reviewed_by = $2, reviewed_at = NOW(), decision_notes = $3,
+         updated_at = NOW()
+       WHERE id = $4 AND status = 'pending'`,
       [decision, actor.id, decisionNotes || null, id],
     );
 
@@ -340,8 +424,41 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
         [reqRow.member_id],
       );
 
+      const currentLevelId = member.rows[0]?.membership_level_id || null;
+      if (currentLevelId && reqRow.from_level_id && currentLevelId !== reqRow.from_level_id) {
+        throw new AppError(
+          409,
+          'LEVEL_CHANGED',
+          'Member level changed since recommendation; reject and re-recommend',
+        );
+      }
+
+      const toLevel = await client.query(
+        `SELECT id, code, name, display_name, rank, rank_group, level_number
+         FROM membership_levels WHERE id = $1`,
+        [reqRow.to_level_id],
+      );
+      approvedToLevel = toLevel.rows[0] || null;
+
+      if (currentLevelId) {
+        const current = await client.query(
+          `SELECT rank FROM membership_levels WHERE id = $1`,
+          [currentLevelId],
+        );
+        const expectedRank = Number(current.rows[0]?.rank) + 1;
+        if (approvedToLevel && Number(approvedToLevel.rank) !== expectedRank) {
+          throw new AppError(
+            400,
+            'SKIP_NOT_ALLOWED',
+            'Approved level must be the next sequential driving level',
+          );
+        }
+      }
+
       await client.query(
-        `UPDATE member_profiles SET membership_level_id = $1 WHERE id = $2`,
+        `UPDATE member_profiles
+         SET membership_level_id = $1, last_progression_at = NOW(), updated_at = NOW()
+         WHERE id = $2`,
         [reqRow.to_level_id, reqRow.member_id],
       );
 
@@ -351,13 +468,22 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
          ) VALUES ($1,$2,$3,$4,$5,$6)`,
         [
           reqRow.member_id,
-          member.rows[0]?.membership_level_id || null,
+          currentLevelId,
           reqRow.to_level_id,
           'upgrade_approved',
           id,
           actor.id,
         ],
       );
+
+      if (approvedToLevel) {
+        rolePromotion = await maybeCreateRolePromotionFromLevel(client, {
+          memberId: reqRow.member_id,
+          toLevelCode: approvedToLevel.code,
+          upgradeRequestId: id,
+          toLevelId: approvedToLevel.id,
+        });
+      }
     }
   });
 
@@ -366,18 +492,25 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
     action: `upgrade.${decision}`,
     entityType: 'membership_upgrade_requests',
     entityId: id,
-    metadata: { decisionNotes },
+    metadata: {
+      decisionNotes,
+      toLevel: approvedToLevel?.code || null,
+      rolePromotionId: rolePromotion?.id || null,
+    },
     req,
   });
+
+  const levelLabel = approvedToLevel?.display_name || approvedToLevel?.name || 'next level';
 
   await createNotification({
     userId: reqRow.member_id,
     type: 'upgrade',
-    title: decision === 'approved' ? 'Membership upgraded' : 'Upgrade request declined',
+    title:
+      decision === 'approved' ? 'Driving level promoted' : 'Promotion request declined',
     body:
       decision === 'approved'
-        ? 'Your membership level has been updated.'
-        : 'A membership upgrade recommendation was not approved.',
+        ? `Your driving level is now ${levelLabel}.`
+        : 'A driving-level upgrade recommendation was not approved.',
     data: {
       upgradeRequestId: id,
       decision,
@@ -398,6 +531,24 @@ async function reviewUpgradeRequest(id, { decision, decisionNotes }, actor, req)
     },
     idempotencyKey: `upgrade.review.recommender:${id}:${decision}`,
   });
+
+  if (rolePromotion) {
+    await notifyAdminsOfRolePromotion(rolePromotion);
+    await createNotification({
+      userId: reqRow.member_id,
+      type: 'upgrade',
+      title: 'Club role promotion pending',
+      body:
+        rolePromotion.requested_role_code === 'marshall'
+          ? 'Reaching Marshall driving progression opened a Marshall club-role request for Admin review.'
+          : 'Reaching Pre-Marshall driving progression opened a Pre-Marshall club-role request for Admin review.',
+      data: {
+        rolePromotionRequestId: rolePromotion.id,
+        screen: 'keepers://progress',
+      },
+      idempotencyKey: `role_promo.notify.member:${rolePromotion.id}`,
+    });
+  }
 
   cachePresets.rating(`upgrade.${decision}`);
   return query(`SELECT * FROM membership_upgrade_requests WHERE id = $1`, [id]).then(

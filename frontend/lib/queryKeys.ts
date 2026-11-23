@@ -38,6 +38,18 @@ export const queryKeys = {
     upgrades: (status?: string) => ["ratings", "upgrades", status || "all"] as const,
     criteria: () => ["ratings", "criteria"] as const,
   },
+  progression: {
+    all: ["progression"] as const,
+    dashboard: () => ["progression", "dashboard"] as const,
+    levels: () => ["progression", "levels"] as const,
+    members: (params: Record<string, unknown>) =>
+      ["progression", "members", params] as const,
+    member: (id: string) => ["progression", "member", id] as const,
+    upgrades: (status?: string) =>
+      ["progression", "upgrades", status || "all"] as const,
+    rolePromotions: (status?: string, role?: string) =>
+      ["progression", "role-promotions", status || "all", role || "all"] as const,
+  },
   content: {
     all: ["content"] as const,
     sponsors: () => ["content", "sponsors"] as const,
@@ -63,7 +75,18 @@ export const TAG_TO_QUERY_PREFIXES: Record<string, readonly (readonly string[])[
     queryKeys.trips.all,
     queryKeys.dashboard.all,
   ],
-  ratings: [queryKeys.ratings.all, queryKeys.dashboard.all, queryKeys.members.all],
+  ratings: [
+    queryKeys.ratings.all,
+    queryKeys.dashboard.all,
+    queryKeys.members.all,
+    queryKeys.progression.all,
+  ],
+  progression: [
+    queryKeys.progression.all,
+    queryKeys.ratings.all,
+    queryKeys.dashboard.all,
+    queryKeys.members.all,
+  ],
   sponsors: [queryKeys.content.sponsors()],
   gallery: [queryKeys.content.gallery()],
   carousel: [queryKeys.content.carousel()],

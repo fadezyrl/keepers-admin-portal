@@ -30,9 +30,12 @@ FCM setup: see `../docs/FIREBASE_PUSH.md`.
 ## Trip chat (Socket.IO + presence)
 
 - REST under `/api/chat/*`; Socket.IO on the same HTTP server (`/socket.io`).
+- Messages: `GET /conversations/:id/messages?before=` (older page) or `?after=` (newer catch-up for local-first clients). Do not combine both.
+- `listMessages` batch-loads attachments, senders, and receipts (no per-row N+1).
 - Private conversations use `conversations.private_member_id` with `UNIQUE (trip_id, private_member_id)`.
 - Every socket/REST send, join, receipt, and media action re-checks conversation ACL. Cancel/reject registration revokes rooms immediately.
 - Delivered/read receipts update only from device ACKs — not from Socket emit or FCM send.
+- Idempotent sends via `client_message_id` + unique index.
 - **Presence / FCM suppress:** set `REDIS_URL` for multi-instance. Without it, presence is in-memory and **single-instance only** (documented in `.env.example` and boot logs).
 
 ## Layout

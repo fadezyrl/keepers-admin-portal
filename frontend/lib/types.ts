@@ -268,5 +268,71 @@ export type UpgradeRequest = {
   recommender_last_name?: string;
   from_level_name?: string | null;
   to_level_name?: string;
+  from_level_code?: string | null;
+  to_level_code?: string | null;
   trip_title?: string | null;
+};
+
+export type ProgressionLevel = {
+  id: string;
+  code: string;
+  name: string;
+  displayName?: string;
+  rank: number;
+  rankGroup?: string | null;
+  rankGroupLabel?: string | null;
+  levelNumber?: number | null;
+  description?: string | null;
+  memberCount?: number;
+};
+
+export type ProgressionDashboard = {
+  membersByRank: Array<{ code: string; label: string; count: number }>;
+  membersByLevel: ProgressionLevel[];
+  pendingUpgradeRequests: number;
+  pendingPreMarshallRolePromotions: number;
+  pendingMarshallRolePromotions: number;
+  recentlyPromoted: Array<{
+    id: string;
+    memberId: string;
+    memberName: string;
+    email?: string;
+    fromLevel?: string | null;
+    toLevel: string;
+    toRankGroup?: string | null;
+    reason?: string | null;
+    createdAt: string;
+  }>;
+};
+
+export type ProgressionMemberRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  name: string;
+  email: string;
+  username: string;
+  status: string;
+  completedTrips: number;
+  lastProgressionAt?: string | null;
+  level: ProgressionLevel | null;
+  roles: Array<{ code: string; name?: string }>;
+  pendingUpgrades: number;
+  pendingRolePromotions: number;
+};
+
+export type RolePromotionRequest = {
+  id: string;
+  member_id: string;
+  current_role_code: string;
+  requested_role_code: string;
+  status: string;
+  review_notes?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  username?: string;
+  trigger_level_name?: string | null;
 };

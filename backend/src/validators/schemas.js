@@ -113,6 +113,7 @@ const ratingSchema = z.object({
   privateFeedback: z.string().optional(),
   publicNotes: z.string().optional(),
   recommendUpgradeTo: z.string().optional(),
+  recommendUpgrade: z.union([z.boolean(), z.string()]).optional(),
   recommendationNotes: z.string().optional(),
 });
 

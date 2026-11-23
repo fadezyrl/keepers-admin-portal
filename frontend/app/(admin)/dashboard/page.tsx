@@ -40,7 +40,7 @@ export default function DashboardPage() {
     { label: "Marshalls", value: totals.marshalls, href: "/marshalls" },
     { label: "Upcoming trips", value: totals.upcomingTrips, href: "/trips" },
     { label: "Registrations", value: totals.activeRegistrations, href: "/registrations" },
-    { label: "Upgrade requests", value: totals.pendingUpgradeRequests, href: "/ratings" },
+    { label: "Upgrade requests", value: totals.pendingUpgradeRequests, href: "/progression" },
   ];
 
   return (

@@ -338,69 +338,124 @@ function mapAttachment(row, signedUrl) {
 }
 
 async function mapMessage(row, { includeReceiptSummary = false, viewerId = null } = {}) {
-  const attRes = await query(
-    `SELECT * FROM message_attachments WHERE message_id = $1 ORDER BY created_at ASC`,
-    [row.id],
-  );
-  const attachments = [];
+  const [mapped] = await mapMessagesBatch([row], {
+    includeReceiptSummary,
+    viewerId,
+  });
+  return mapped;
+}
+
+/**
+ * Batch-map messages to avoid N+1 attachment/sender/receipt queries on list/sync.
+ */
+async function mapMessagesBatch(
+  rows,
+  { includeReceiptSummary = false, viewerId = null } = {},
+) {
+  if (!rows.length) return [];
+
+  const messageIds = rows.map((r) => r.id);
+  const senderIds = [
+    ...new Set(rows.map((r) => r.sender_id).filter(Boolean)),
+  ];
+
+  const [attRes, sendersRes, receiptsRes, myReceiptsRes] = await Promise.all([
+    query(
+      `SELECT * FROM message_attachments
+       WHERE message_id = ANY($1::uuid[])
+       ORDER BY created_at ASC`,
+      [messageIds],
+    ),
+    senderIds.length
+      ? query(
+          `SELECT id, first_name, last_name, avatar_url
+           FROM member_profiles WHERE id = ANY($1::uuid[])`,
+          [senderIds],
+        )
+      : Promise.resolve({ rows: [] }),
+    includeReceiptSummary
+      ? query(
+          `SELECT
+             message_id,
+             COUNT(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered,
+             COUNT(*) FILTER (WHERE read_at IS NOT NULL)::int AS read,
+             COUNT(*)::int AS total
+           FROM message_receipts
+           WHERE message_id = ANY($1::uuid[])
+           GROUP BY message_id`,
+          [messageIds],
+        )
+      : Promise.resolve({ rows: [] }),
+    viewerId
+      ? query(
+          `SELECT message_id, delivered_at, read_at FROM message_receipts
+           WHERE message_id = ANY($1::uuid[]) AND user_id = $2`,
+          [messageIds, viewerId],
+        )
+      : Promise.resolve({ rows: [] }),
+  ]);
+
+  const attachmentsByMessage = new Map();
   for (const a of attRes.rows) {
-    const signed = await signChatUrl(a.bucket, a.storage_path);
-    attachments.push(mapAttachment(a, signed));
+    const list = attachmentsByMessage.get(a.message_id) || [];
+    list.push(a);
+    attachmentsByMessage.set(a.message_id, list);
   }
 
-  let sender = null;
-  if (row.sender_id) {
-    const s = await query(
-      `SELECT id, first_name, last_name, avatar_url FROM member_profiles WHERE id = $1`,
-      [row.sender_id],
-    );
-    if (s.rows[0]) {
-      sender = {
-        id: s.rows[0].id,
-        name: `${s.rows[0].first_name} ${s.rows[0].last_name}`.trim(),
-        avatar: s.rows[0].avatar_url,
-      };
+  const senderById = new Map();
+  for (const s of sendersRes.rows) {
+    senderById.set(s.id, {
+      id: s.id,
+      name: `${s.first_name} ${s.last_name}`.trim(),
+      avatar: s.avatar_url,
+    });
+  }
+
+  const receiptByMessage = new Map();
+  for (const r of receiptsRes.rows) {
+    receiptByMessage.set(r.message_id, {
+      delivered: r.delivered,
+      read: r.read,
+      total: r.total,
+    });
+  }
+
+  const myReceiptByMessage = new Map();
+  for (const r of myReceiptsRes.rows) {
+    myReceiptByMessage.set(r.message_id, {
+      delivered_at: r.delivered_at,
+      read_at: r.read_at,
+    });
+  }
+
+  const mapped = [];
+  for (const row of rows) {
+    const rawAtts = attachmentsByMessage.get(row.id) || [];
+    const attachments = [];
+    for (const a of rawAtts) {
+      const signed = await signChatUrl(a.bucket, a.storage_path);
+      attachments.push(mapAttachment(a, signed));
     }
-  }
 
-  let receipt = null;
-  if (includeReceiptSummary) {
-    const counts = await query(
-      `SELECT
-         COUNT(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered,
-         COUNT(*) FILTER (WHERE read_at IS NOT NULL)::int AS read,
-         COUNT(*)::int AS total
-       FROM message_receipts WHERE message_id = $1`,
-      [row.id],
-    );
-    receipt = counts.rows[0];
+    mapped.push({
+      id: row.id,
+      conversationId: row.conversation_id,
+      clientMessageId: row.client_message_id,
+      type: row.message_type,
+      content: row.deleted_at ? null : row.content,
+      replyToMessageId: row.reply_to_message_id,
+      sender: row.sender_id ? senderById.get(row.sender_id) || null : null,
+      attachments,
+      createdAt: row.created_at,
+      editedAt: row.edited_at,
+      deletedAt: row.deleted_at,
+      receipt: includeReceiptSummary
+        ? receiptByMessage.get(row.id) || { delivered: 0, read: 0, total: 0 }
+        : null,
+      myReceipt: viewerId ? myReceiptByMessage.get(row.id) || null : null,
+    });
   }
-
-  let myReceipt = null;
-  if (viewerId) {
-    const mine = await query(
-      `SELECT delivered_at, read_at FROM message_receipts
-       WHERE message_id = $1 AND user_id = $2`,
-      [row.id, viewerId],
-    );
-    myReceipt = mine.rows[0] || null;
-  }
-
-  return {
-    id: row.id,
-    conversationId: row.conversation_id,
-    clientMessageId: row.client_message_id,
-    type: row.message_type,
-    content: row.deleted_at ? null : row.content,
-    replyToMessageId: row.reply_to_message_id,
-    sender,
-    attachments,
-    createdAt: row.created_at,
-    editedAt: row.edited_at,
-    deletedAt: row.deleted_at,
-    receipt,
-    myReceipt,
-  };
+  return mapped;
 }
 
 async function listActiveRecipientIds(conversationId, excludeUserId = null) {
@@ -574,28 +629,81 @@ async function sendMessage(conversationId, actor, payload) {
   return mapped;
 }
 
-async function listMessages(conversationId, actor, { before = null, limit = 40 } = {}) {
+function toIsoCursor(value) {
+  if (value == null || value === '') return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Invalid message cursor');
+  }
+  return d.toISOString();
+}
+
+async function listMessages(
+  conversationId,
+  actor,
+  { before = null, after = null, limit = 40 } = {},
+) {
   await assertCanAccessConversation(conversationId, actor);
   const safeLimit = Math.min(Math.max(Number(limit) || 40, 1), 100);
+
+  // `after` = newer-than watermark for silent catch-up sync (local-first clients).
+  // Mutually exclusive with `before` (older-page cursor).
+  if (after && before) {
+    throw new AppError(
+      400,
+      'VALIDATION_ERROR',
+      'Use either before or after, not both',
+    );
+  }
+
+  const beforeIso = toIsoCursor(before);
+  const afterIso = toIsoCursor(after);
+
   const params = [conversationId];
   let sql = `
     SELECT * FROM messages
     WHERE conversation_id = $1`;
-  if (before) {
-    params.push(before);
-    sql += ` AND created_at < $${params.length}`;
+
+  if (afterIso) {
+    // Use >= in SQL then filter in JS: timestamptz can store sub-ms precision, so a
+    // JS ISO watermark of "...505Z" may still match the source row under `>`.
+    params.push(afterIso);
+    sql += ` AND created_at >= $${params.length}::timestamptz`;
+    params.push(safeLimit + 5);
+    sql += ` ORDER BY created_at ASC LIMIT $${params.length}`;
+    const res = await query(sql, params);
+    const afterMs = new Date(afterIso).getTime();
+    const mapped = await mapMessagesBatch(res.rows, {
+      includeReceiptSummary: true,
+      viewerId: actor.id,
+    });
+    const items = mapped
+      .filter((m) => new Date(m.createdAt).getTime() > afterMs)
+      .slice(0, safeLimit);
+    return {
+      items,
+      nextBefore: null,
+      nextAfter: items.length ? items[items.length - 1].createdAt : null,
+    };
+  }
+
+  if (beforeIso) {
+    params.push(beforeIso);
+    sql += ` AND created_at < $${params.length}::timestamptz`;
   }
   params.push(safeLimit);
   sql += ` ORDER BY created_at DESC LIMIT $${params.length}`;
 
   const res = await query(sql, params);
-  const items = [];
-  for (const row of res.rows.reverse()) {
-    items.push(await mapMessage(row, { includeReceiptSummary: true, viewerId: actor.id }));
-  }
+  const chronological = res.rows.slice().reverse();
+  const items = await mapMessagesBatch(chronological, {
+    includeReceiptSummary: true,
+    viewerId: actor.id,
+  });
   return {
     items,
     nextBefore: res.rows.length ? res.rows[res.rows.length - 1].created_at : null,
+    nextAfter: null,
   };
 }
 

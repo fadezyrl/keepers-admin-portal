@@ -204,8 +204,15 @@ async function mapTrip(row, { userId = null, actor = null } = {}) {
         destination: row.destination,
       }),
     tripType: row.trip_type || row.category || null,
-    requiredMembership: row.required_membership_name || row.required_membership_code,
+    requiredMembership:
+      row.required_membership_display_name ||
+      row.required_membership_name ||
+      row.required_membership_code,
     requiredMembershipCode: row.required_membership_code,
+    requiredMembershipRank:
+      row.required_membership_rank != null
+        ? Number(row.required_membership_rank)
+        : null,
     minTripsRequired: row.min_trips_required,
     coverImage: row.cover_image_url,
     gallery: media.rows.filter((m) => m.media_type === 'image').map((m) => m.public_url),
@@ -411,8 +418,10 @@ async function createTrip(payload, actor, req) {
 
   let requiredLevelId = null;
   if (payload.requiredMembership || payload.requiredMembershipCode) {
-    const code = (payload.requiredMembershipCode || payload.requiredMembership || 'junior')
-      .toLowerCase();
+    const { resolveLevelCode } = require('./progressionLevels');
+    const code = resolveLevelCode(
+      payload.requiredMembershipCode || payload.requiredMembership || 'junior_1',
+    );
     const level = await query(`SELECT id FROM membership_levels WHERE code = $1`, [code]);
     requiredLevelId = level.rows[0]?.id || null;
   }
@@ -517,7 +526,10 @@ async function updateTrip(id, payload, actor, req) {
 
   let requiredLevelId = existing.required_membership_level_id;
   if (payload.requiredMembership || payload.requiredMembershipCode) {
-    const code = (payload.requiredMembershipCode || payload.requiredMembership).toLowerCase();
+    const { resolveLevelCode } = require('./progressionLevels');
+    const code = resolveLevelCode(
+      payload.requiredMembershipCode || payload.requiredMembership,
+    );
     const level = await query(`SELECT id FROM membership_levels WHERE code = $1`, [code]);
     requiredLevelId = level.rows[0]?.id || null;
   }

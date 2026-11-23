@@ -56,6 +56,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const data = await chatService.listMessages(req.params.id, req.user, {
       before: req.query.before || null,
+      after: req.query.after || null,
       limit: Number(req.query.limit || 40),
     });
     return ok(res, data);

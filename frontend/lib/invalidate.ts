@@ -25,7 +25,10 @@ export const afterRegistrationMutation = (client: QueryClient) =>
   invalidateTags(client, ["registrations", "trips", "dashboard"]);
 
 export const afterRatingMutation = (client: QueryClient) =>
-  invalidateTags(client, ["ratings", "members", "dashboard"]);
+  invalidateTags(client, ["ratings", "members", "dashboard", "progression"]);
+
+export const afterProgressionMutation = (client: QueryClient) =>
+  invalidateTags(client, ["progression", "ratings", "members", "dashboard"]);
 
 export const afterSponsorMutation = (client: QueryClient) =>
   invalidateTags(client, ["sponsors"]);

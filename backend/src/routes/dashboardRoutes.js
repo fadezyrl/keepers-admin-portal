@@ -108,7 +108,9 @@ router.get(
   authenticate,
   asyncHandler(async (_req, res) => {
     const levels = await query(
-      `SELECT id, code, name, rank, description,
+      `SELECT id, code, name, display_name AS "displayName",
+              rank, rank_group AS "rankGroup", level_number AS "levelNumber",
+              description,
               min_completed_trips AS "minCompletedTrips",
               min_average_rating AS "minAverageRating"
        FROM membership_levels WHERE is_active = TRUE ORDER BY rank`,

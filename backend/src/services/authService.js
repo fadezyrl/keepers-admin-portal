@@ -52,7 +52,9 @@ async function signup(payload, req) {
     throw new AppError(409, 'USERNAME_TAKEN', 'Username is already taken');
   }
 
-  const junior = await getMembershipLevelByCode('junior');
+  const junior =
+    (await getMembershipLevelByCode('junior_1')) ||
+    (await getMembershipLevelByCode('junior'));
   const memberRole = await getRoleByCode('member');
 
   const { data: created, error } = await admin.auth.admin.createUser({
@@ -246,9 +248,16 @@ async function me(userId) {
     nationality: ctx.profile.nationality,
     gender: ctx.profile.gender,
     avatar: ctx.profile.avatar_url,
-    membership: ctx.profile.membership_name || ctx.profile.membership_code,
+    membership:
+      ctx.profile.membership_display_name ||
+      ctx.profile.membership_name ||
+      ctx.profile.membership_code,
+    membershipDisplayName:
+      ctx.profile.membership_display_name || ctx.profile.membership_name,
     membershipCode: ctx.profile.membership_code,
     membershipRank: ctx.profile.membership_rank,
+    membershipRankGroup: ctx.profile.membership_rank_group,
+    membershipLevelNumber: ctx.profile.membership_level_number,
     completedTrips: ctx.profile.completed_trips,
     status: ctx.profile.status,
     roles: ctx.roles,
