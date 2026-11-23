@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Support — Keepers Adventures",
@@ -105,6 +106,16 @@ export default function SupportPage() {
           >
             @keepersadventure
           </a>
+        </p>
+
+        <p style={{ margin: "1.5rem 0 0", color: "#D2CEC6", lineHeight: 1.6 }}>
+          Privacy Policy:{" "}
+          <Link
+            href="/privacy-policy"
+            style={{ color: "#F3F0EA", textUnderlineOffset: 3 }}
+          >
+            keepers-admin-portal.vercel.app/privacy-policy
+          </Link>
         </p>
 
         <p style={{ margin: "2rem 0 0", color: "#A9A49B", fontSize: 13 }}>
