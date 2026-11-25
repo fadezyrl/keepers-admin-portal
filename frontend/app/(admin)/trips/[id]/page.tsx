@@ -15,6 +15,7 @@ import { Alert } from "@/components/ui/Alert";
 import { EmptyBlock, ErrorBlock, LoadingBlock } from "@/components/ui/StateBlock";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { TRIP_CATEGORIES } from "@/lib/tripCategories";
+import { mapsSearchUrl, parseMapsUrl } from "@/lib/mapsLinks";
 
 function TripDetailInner() {
   const params = useParams<{ id: string }>();
@@ -186,6 +187,9 @@ function TripDetailInner() {
     setBusy(true);
     setMessage(null);
     try {
+      const mapsLink = String(fd.get("mapsLink") || "");
+      const locationLabel = String(fd.get("locationLabel") || "");
+      const parsed = parseMapsUrl(mapsLink);
       await api.patch(`/trips/${id}`, {
         title: String(fd.get("title") || data.title),
         description: String(fd.get("description") || ""),
@@ -194,6 +198,14 @@ function TripDetailInner() {
         category: String(fd.get("category") || data.category || "Trips & Events"),
         instructions: String(fd.get("instructions") || ""),
         coverImage: coverImage.trim() || String(fd.get("coverImage") || data.coverImage || "") || undefined,
+        location: {
+          label:
+            locationLabel.trim() ||
+            String(fd.get("destination") || data.destination) ||
+            String(fd.get("meetingPoint") || ""),
+          latitude: parsed.latitude ?? undefined,
+          longitude: parsed.longitude ?? undefined,
+        },
       });
       setMessage("Trip updated");
       await afterTripMutation(queryClient);
@@ -290,6 +302,43 @@ function TripDetailInner() {
                 name="meetingPoint"
                 defaultValue={data.meetingPoint || ""}
               />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Location label
+              </span>
+              <input
+                className="admin-input"
+                name="locationLabel"
+                defaultValue={data.location?.label || ""}
+              />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Maps link
+              </span>
+              <input
+                className="admin-input"
+                name="mapsLink"
+                defaultValue={
+                  data.location?.latitude != null && data.location?.longitude != null
+                    ? `https://www.google.com/maps/search/?api=1&query=${data.location.latitude},${data.location.longitude}`
+                    : ""
+                }
+                placeholder="Paste a Google Maps link"
+              />
+              <a
+                className="mt-2 inline-block text-sm underline"
+                href={mapsSearchUrl({
+                  label: data.location?.label || data.destination,
+                  latitude: data.location?.latitude,
+                  longitude: data.location?.longitude,
+                })}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in Google Maps
+              </a>
             </label>
             <label className="block">
               <span className="mb-2 block text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">

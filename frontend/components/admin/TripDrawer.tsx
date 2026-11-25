@@ -16,6 +16,7 @@ import { DrawerSkeleton } from "@/components/ui/Skeleton";
 import { FormField } from "@/components/ui/FormField";
 import { MediaPicker } from "@/components/ui/MediaPicker";
 import { TRIP_CATEGORIES } from "@/lib/tripCategories";
+import { parseMapsUrl } from "@/lib/mapsLinks";
 
 const emptyForm = {
   title: "",
@@ -24,6 +25,8 @@ const emptyForm = {
   time: "",
   description: "",
   meetingPoint: "",
+  locationLabel: "",
+  mapsLink: "",
   difficulty: "Moderate",
   category: "Trips & Events",
   maxParticipants: "20",
@@ -52,6 +55,7 @@ export function TripCreateDrawer({
     e.preventDefault();
     setBusy(true);
     try {
+      const parsed = parseMapsUrl(form.mapsLink);
       const created = await api.post<Trip>("/trips", {
         title: form.title.trim(),
         destination: form.destination.trim(),
@@ -64,6 +68,14 @@ export function TripCreateDrawer({
         maxParticipants: Number(form.maxParticipants) || 20,
         coverImage: form.coverImage.trim() || undefined,
         publish: form.publish,
+        location: {
+          label:
+            form.locationLabel.trim() ||
+            form.destination.trim() ||
+            form.meetingPoint.trim(),
+          latitude: parsed.latitude ?? undefined,
+          longitude: parsed.longitude ?? undefined,
+        },
       });
       onCreated(created);
       toast.success("Trip created");
@@ -169,6 +181,22 @@ export function TripCreateDrawer({
             onChange={(e) => setForm({ ...form, meetingPoint: e.target.value })}
           />
         </FormField>
+        <FormField label="Location label (optional)">
+          <input
+            className="admin-input"
+            value={form.locationLabel}
+            onChange={(e) => setForm({ ...form, locationLabel: e.target.value })}
+            placeholder="Shown on trip details"
+          />
+        </FormField>
+        <FormField label="Maps link (optional)">
+          <input
+            className="admin-input"
+            value={form.mapsLink}
+            onChange={(e) => setForm({ ...form, mapsLink: e.target.value })}
+            placeholder="Paste Google Maps or Apple Maps link"
+          />
+        </FormField>
         <FormField label="Description" className="sm:col-span-2">
           <textarea
             className="admin-textarea"
@@ -215,6 +243,8 @@ export function TripQuickDrawer({
     title: "",
     destination: "",
     meetingPoint: "",
+    locationLabel: "",
+    mapsLink: "",
     description: "",
     category: "Trips & Events",
     coverImage: "",
@@ -245,6 +275,11 @@ export function TripQuickDrawer({
       title: data.title || "",
       destination: data.destination || "",
       meetingPoint: data.meetingPoint || "",
+      locationLabel: data.location?.label || "",
+      mapsLink:
+        data.location?.latitude != null && data.location?.longitude != null
+          ? `https://www.google.com/maps/search/?api=1&query=${data.location.latitude},${data.location.longitude}`
+          : "",
       description: data.description || "",
       category: data.category || "Trips & Events",
       coverImage: data.coverImage || "",
@@ -277,6 +312,7 @@ export function TripQuickDrawer({
     if (!tripId || !data) return;
     setBusy(true);
     try {
+      const parsed = parseMapsUrl(edit.mapsLink);
       const updated = await api.patch<Trip>(`/trips/${tripId}`, {
         title: edit.title.trim(),
         destination: edit.destination.trim(),
@@ -284,6 +320,14 @@ export function TripQuickDrawer({
         description: edit.description || "",
         category: edit.category,
         coverImage: edit.coverImage.trim() || undefined,
+        location: {
+          label:
+            edit.locationLabel.trim() ||
+            edit.destination.trim() ||
+            edit.meetingPoint.trim(),
+          latitude: parsed.latitude ?? undefined,
+          longitude: parsed.longitude ?? undefined,
+        },
       });
       const next = { ...data, ...updated, ...edit };
       setData(next);
@@ -392,6 +436,21 @@ export function TripQuickDrawer({
                 className="admin-input"
                 value={edit.meetingPoint}
                 onChange={(e) => setEdit({ ...edit, meetingPoint: e.target.value })}
+              />
+            </FormField>
+            <FormField label="Location label">
+              <input
+                className="admin-input"
+                value={edit.locationLabel}
+                onChange={(e) => setEdit({ ...edit, locationLabel: e.target.value })}
+              />
+            </FormField>
+            <FormField label="Maps link">
+              <input
+                className="admin-input"
+                value={edit.mapsLink}
+                onChange={(e) => setEdit({ ...edit, mapsLink: e.target.value })}
+                placeholder="Paste Google Maps link"
               />
             </FormField>
             <FormField label="Category" className="sm:col-span-2">

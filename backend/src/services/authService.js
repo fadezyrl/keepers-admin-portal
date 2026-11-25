@@ -306,7 +306,17 @@ function summarizeUser(authUser, ctx) {
     firstName: ctx.profile?.first_name,
     lastName: ctx.profile?.last_name,
     username: ctx.profile?.username,
-    membership: ctx.profile?.membership_name || ctx.profile?.membership_code,
+    phone: ctx.profile?.phone,
+    avatar: ctx.profile?.avatar_url,
+    membership:
+      ctx.profile?.membership_display_name ||
+      ctx.profile?.membership_name ||
+      ctx.profile?.membership_code,
+    membershipDisplayName:
+      ctx.profile?.membership_display_name || ctx.profile?.membership_name,
+    membershipCode: ctx.profile?.membership_code,
+    membershipRank: ctx.profile?.membership_rank,
+    completedTrips: ctx.profile?.completed_trips || 0,
   };
 }
 

@@ -132,6 +132,65 @@ export async function apiRequest<T>(
   return json.data;
 }
 
+export type UploadProgress = {
+  loaded: number;
+  total: number;
+  percent: number;
+};
+
+/** XHR upload with progress events (browser FormData). */
+export function uploadWithProgress<T>(
+  path: string,
+  formData: FormData,
+  onProgress?: (progress: UploadProgress) => void,
+  opts?: { token?: string | null; auth?: boolean },
+): Promise<T> {
+  const url = `${getApiBase()}${path.startsWith("/") ? path : `/${path}`}`;
+  const auth = opts?.auth !== false;
+  const bearer = opts?.token === undefined ? getStoredToken() : opts.token;
+
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Accept", "application/json");
+    if (auth && bearer) {
+      xhr.setRequestHeader("Authorization", `Bearer ${bearer}`);
+    }
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
+      onProgress?.({ loaded: event.loaded, total: event.total, percent });
+    };
+    xhr.onload = () => {
+      let json: ApiResponse<T> | null = null;
+      try {
+        json = JSON.parse(xhr.responseText) as ApiResponse<T>;
+      } catch {
+        reject(
+          new ApiError("Invalid response from server", "INVALID_RESPONSE", xhr.status),
+        );
+        return;
+      }
+      if (!json?.success) {
+        reject(
+          new ApiError(
+            json?.error?.message || "Request failed",
+            json?.error?.code || "REQUEST_FAILED",
+            xhr.status,
+            json?.error?.details,
+          ),
+        );
+        return;
+      }
+      resolve(json.data);
+    };
+    xhr.onerror = () => {
+      reject(new ApiError("Network request failed", "NETWORK_ERROR", 0));
+    };
+    xhr.send(formData);
+  });
+}
+
 export const api = {
   get: <T>(path: string, opts?: Omit<RequestOptions, "method" | "body">) =>
     apiRequest<T>(path, { ...opts, method: "GET" }),
@@ -143,6 +202,7 @@ export const api = {
     apiRequest<T>(path, { ...opts, method: "DELETE" }),
   upload: <T>(path: string, formData: FormData, opts?: Omit<RequestOptions, "method" | "formData">) =>
     apiRequest<T>(path, { ...opts, method: "POST", formData }),
+  uploadWithProgress,
 };
 
 export function buildQuery(params: Record<string, string | number | boolean | undefined | null>) {
