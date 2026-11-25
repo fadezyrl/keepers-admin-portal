@@ -15,6 +15,7 @@ import { FormField } from "@/components/ui/FormField";
 import { MediaPicker } from "@/components/ui/MediaPicker";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { RowActions } from "@/components/ui/RowActions";
 
 type HeroSlide = {
   id: string;
@@ -35,7 +36,7 @@ export default function CarouselPage() {
     { staleTime: stale.content },
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [active, setActive] = useState<HeroSlide | null>(null);
+  const [editing, setEditing] = useState<HeroSlide | null>(null);
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [image, setImage] = useState("");
@@ -43,23 +44,50 @@ export default function CarouselPage() {
   const [busy, setBusy] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  async function createSlide(e: FormEvent) {
+  function openCreate() {
+    setEditing(null);
+    setTitle("");
+    setSubtitle("");
+    setImage("");
+    setOrder("0");
+    setDrawerOpen(true);
+  }
+
+  function openEdit(slide: HeroSlide) {
+    setEditing(slide);
+    setTitle(slide.title || "");
+    setSubtitle(slide.subtitle || "");
+    setImage(slide.image || "");
+    setOrder(String(slide.displayOrder ?? 0));
+    setDrawerOpen(true);
+  }
+
+  function closeDrawer() {
+    if (busy) return;
+    setDrawerOpen(false);
+  }
+
+  async function saveSlide(e: FormEvent) {
     e.preventDefault();
+    if (!image.trim()) {
+      toast.error("Image is required");
+      return;
+    }
+    if (busy) return;
     setBusy(true);
     try {
       await api.post("/content/hero-slides", {
+        id: editing?.id,
         title: title.trim() || undefined,
         subtitle: subtitle.trim() || undefined,
         image: image.trim(),
         displayOrder: Number(order) || 0,
-        isActive: true,
+        isActive: editing?.isActive ?? true,
+        tripId: editing?.tripId || undefined,
       });
-      toast.success("Carousel slide saved");
+      toast.success(editing ? "Carousel slide updated" : "Carousel slide created");
       setDrawerOpen(false);
-      setTitle("");
-      setSubtitle("");
-      setImage("");
-      setOrder("0");
+      setEditing(null);
       await afterCarouselMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save slide");
@@ -80,7 +108,9 @@ export default function CarouselPage() {
       await afterCarouselMutation(queryClient);
       toast.success("Slide deactivated");
       setDeleteId(null);
-      if (active?.id === id) setActive((prev) => (prev ? { ...prev, isActive: false } : prev));
+      if (editing?.id === id) {
+        setEditing((prev) => (prev ? { ...prev, isActive: false } : prev));
+      }
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to remove slide");
     } finally {
@@ -96,7 +126,7 @@ export default function CarouselPage() {
         title="Carousel"
         subtitle="Home hero slides shown in the Keepers mobile app."
         actions={
-          <button type="button" className="btn btn-primary" onClick={() => setDrawerOpen(true)}>
+          <button type="button" className="btn btn-primary" onClick={openCreate}>
             Add slide
           </button>
         }
@@ -114,7 +144,7 @@ export default function CarouselPage() {
             <article
               key={slide.id}
               className="panel cursor-pointer overflow-hidden"
-              onClick={() => setActive(slide)}
+              onClick={() => openEdit(slide)}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -133,18 +163,19 @@ export default function CarouselPage() {
                 <p className="mt-2 text-xs uppercase tracking-[0.12em] text-[var(--keepers-muted)]">
                   Order {slide.displayOrder ?? 0}
                 </p>
-                {slide.isActive !== false ? (
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-sm mt-3"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteId(slide.id);
-                    }}
-                  >
-                    Deactivate
-                  </button>
-                ) : null}
+                <div className="mt-3">
+                  <RowActions
+                    actions={[
+                      { label: "Edit", onClick: () => openEdit(slide) },
+                      {
+                        label: "Deactivate",
+                        onClick: () => setDeleteId(slide.id),
+                        tone: "danger",
+                        hidden: slide.isActive === false,
+                      },
+                    ]}
+                  />
+                </div>
               </div>
             </article>
           ))}
@@ -153,25 +184,31 @@ export default function CarouselPage() {
 
       <Drawer
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        title="Add carousel slide"
+        onClose={closeDrawer}
+        title={editing ? "Edit carousel slide" : "Add carousel slide"}
+        subtitle={editing ? "Update content or replace the image. Saving keeps the same slide ID." : undefined}
         footer={
           <>
-            <button type="submit" form="carousel-form" className="btn btn-primary" disabled={busy}>
-              {busy ? "Saving…" : "Add slide"}
+            <button
+              type="submit"
+              form="carousel-form"
+              className="btn btn-primary"
+              disabled={busy || !image.trim()}
+            >
+              {busy ? "Saving…" : editing ? "Update slide" : "Add slide"}
             </button>
             <button
               type="button"
               className="btn btn-secondary"
               disabled={busy}
-              onClick={() => setDrawerOpen(false)}
+              onClick={closeDrawer}
             >
               Cancel
             </button>
           </>
         }
       >
-        <form id="carousel-form" onSubmit={createSlide} className="space-y-4">
+        <form id="carousel-form" onSubmit={saveSlide} className="space-y-4">
           <FormField label="Title">
             <input className="admin-input" value={title} onChange={(e) => setTitle(e.target.value)} />
           </FormField>
@@ -191,44 +228,12 @@ export default function CarouselPage() {
               onChange={(e) => setOrder(e.target.value)}
             />
           </FormField>
+          {editing ? (
+            <p className="m-0 text-xs text-[var(--keepers-muted)]">
+              Status stays {editing.isActive === false ? "inactive" : "active"} unless you deactivate from the card.
+            </p>
+          ) : null}
         </form>
-      </Drawer>
-
-      <Drawer
-        open={Boolean(active)}
-        onClose={() => setActive(null)}
-        title={active?.title || "Carousel slide"}
-        subtitle={active?.subtitle || undefined}
-        footer={
-          active && active.isActive !== false ? (
-            <button
-              type="button"
-              className="btn btn-danger"
-              onClick={() => setDeleteId(active.id)}
-            >
-              Deactivate
-            </button>
-          ) : null
-        }
-      >
-        {active ? (
-          <div className="space-y-4">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={active.image} alt="" className="w-full object-cover" />
-            <dl className="detail-grid">
-              <div>
-                <dt>Order</dt>
-                <dd>{active.displayOrder ?? 0}</dd>
-              </div>
-              <div>
-                <dt>Status</dt>
-                <dd>
-                  <StatusBadge status={active.isActive === false ? "draft" : "active"} />
-                </dd>
-              </div>
-            </dl>
-          </div>
-        ) : null}
       </Drawer>
 
       <ConfirmDialog

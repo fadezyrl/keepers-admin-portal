@@ -14,11 +14,14 @@ import { Drawer } from "@/components/ui/Drawer";
 import { FormField } from "@/components/ui/FormField";
 import { MediaPicker } from "@/components/ui/MediaPicker";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { RowActions } from "@/components/ui/RowActions";
 
 type GalleryItem = {
   id: string;
   image: string;
   caption?: string | null;
+  tripId?: string | null;
   displayOrder?: number;
   isActive?: boolean;
 };
@@ -32,28 +35,54 @@ export default function GalleryPage() {
     { staleTime: stale.content },
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [active, setActive] = useState<GalleryItem | null>(null);
+  const [editing, setEditing] = useState<GalleryItem | null>(null);
   const [image, setImage] = useState("");
   const [caption, setCaption] = useState("");
   const [order, setOrder] = useState("0");
   const [busy, setBusy] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  async function createItem(e: FormEvent) {
+  function openCreate() {
+    setEditing(null);
+    setImage("");
+    setCaption("");
+    setOrder("0");
+    setDrawerOpen(true);
+  }
+
+  function openEdit(item: GalleryItem) {
+    setEditing(item);
+    setImage(item.image || "");
+    setCaption(item.caption || "");
+    setOrder(String(item.displayOrder ?? 0));
+    setDrawerOpen(true);
+  }
+
+  function closeDrawer() {
+    if (busy) return;
+    setDrawerOpen(false);
+  }
+
+  async function saveItem(e: FormEvent) {
     e.preventDefault();
+    if (!image.trim()) {
+      toast.error("Image is required");
+      return;
+    }
+    if (busy) return;
     setBusy(true);
     try {
       await api.post("/content/gallery", {
+        id: editing?.id,
         image: image.trim(),
         caption: caption.trim() || undefined,
         displayOrder: Number(order) || 0,
-        isActive: true,
+        isActive: editing?.isActive ?? true,
+        tripId: editing?.tripId || undefined,
       });
-      toast.success("Gallery item saved");
+      toast.success(editing ? "Gallery item updated" : "Gallery item saved");
       setDrawerOpen(false);
-      setImage("");
-      setCaption("");
-      setOrder("0");
+      setEditing(null);
       await afterGalleryMutation(queryClient);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save item");
@@ -70,7 +99,10 @@ export default function GalleryPage() {
       await afterGalleryMutation(queryClient);
       toast.success("Gallery item removed");
       setDeleteId(null);
-      if (active?.id === id) setActive(null);
+      if (editing?.id === id) {
+        setDrawerOpen(false);
+        setEditing(null);
+      }
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to remove item");
     } finally {
@@ -86,7 +118,7 @@ export default function GalleryPage() {
         title="Gallery"
         subtitle="Photo strip content shown on the Keepers home experience."
         actions={
-          <button type="button" className="btn btn-primary" onClick={() => setDrawerOpen(true)}>
+          <button type="button" className="btn btn-primary" onClick={openCreate}>
             Add photo
           </button>
         }
@@ -104,7 +136,7 @@ export default function GalleryPage() {
             <article
               key={item.id}
               className="panel cursor-pointer overflow-hidden"
-              onClick={() => setActive(item)}
+              onClick={() => openEdit(item)}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -112,20 +144,28 @@ export default function GalleryPage() {
                 alt={item.caption || "Gallery"}
                 className="h-40 w-full object-cover"
               />
-              <div className="flex items-center justify-between gap-2 p-4">
-                <p className="m-0 text-sm text-[var(--keepers-muted)]">
-                  {item.caption || "No caption"}
+              <div className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="m-0 text-sm text-[var(--keepers-muted)]">
+                    {item.caption || "No caption"}
+                  </p>
+                  <StatusBadge status={item.isActive === false ? "draft" : "active"} />
+                </div>
+                <p className="mt-2 text-xs uppercase tracking-[0.12em] text-[var(--keepers-muted)]">
+                  Order {item.displayOrder ?? 0}
                 </p>
-                <button
-                  type="button"
-                  className="btn btn-danger btn-sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteId(item.id);
-                  }}
-                >
-                  Remove
-                </button>
+                <div className="mt-3">
+                  <RowActions
+                    actions={[
+                      { label: "Edit", onClick: () => openEdit(item) },
+                      {
+                        label: "Remove",
+                        onClick: () => setDeleteId(item.id),
+                        tone: "danger",
+                      },
+                    ]}
+                  />
+                </div>
               </div>
             </article>
           ))}
@@ -134,25 +174,35 @@ export default function GalleryPage() {
 
       <Drawer
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        title="Add gallery photo"
+        onClose={closeDrawer}
+        title={editing ? "Edit gallery photo" : "Add gallery photo"}
+        subtitle={
+          editing
+            ? "Replace the image or update caption/order. Saving keeps the same gallery ID."
+            : undefined
+        }
         footer={
           <>
-            <button type="submit" form="gallery-form" className="btn btn-primary" disabled={busy}>
-              {busy ? "Saving…" : "Add to gallery"}
+            <button
+              type="submit"
+              form="gallery-form"
+              className="btn btn-primary"
+              disabled={busy || !image.trim()}
+            >
+              {busy ? "Saving…" : editing ? "Update photo" : "Add to gallery"}
             </button>
             <button
               type="button"
               className="btn btn-secondary"
               disabled={busy}
-              onClick={() => setDrawerOpen(false)}
+              onClick={closeDrawer}
             >
               Cancel
             </button>
           </>
         }
       >
-        <form id="gallery-form" onSubmit={createItem} className="space-y-4">
+        <form id="gallery-form" onSubmit={saveItem} className="space-y-4">
           <MediaPicker label="Image" bucket="gallery" value={image} onChange={setImage} />
           <FormField label="Caption">
             <input
@@ -172,43 +222,10 @@ export default function GalleryPage() {
         </form>
       </Drawer>
 
-      <Drawer
-        open={Boolean(active)}
-        onClose={() => setActive(null)}
-        title={active?.caption || "Gallery item"}
-        footer={
-          active ? (
-            <button
-              type="button"
-              className="btn btn-danger"
-              onClick={() => setDeleteId(active.id)}
-            >
-              Remove
-            </button>
-          ) : null
-        }
-      >
-        {active ? (
-          <div className="space-y-4">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={active.image} alt="" className="w-full object-cover" />
-            <dl className="detail-grid">
-              <div>
-                <dt>Order</dt>
-                <dd>{active.displayOrder ?? 0}</dd>
-              </div>
-              <div>
-                <dt>Active</dt>
-                <dd>{active.isActive === false ? "No" : "Yes"}</dd>
-              </div>
-            </dl>
-          </div>
-        ) : null}
-      </Drawer>
-
       <ConfirmDialog
         open={Boolean(deleteId)}
         title="Remove gallery item?"
+        description="The photo will be removed from the gallery listing."
         confirmLabel="Remove"
         busy={busy}
         onClose={() => {

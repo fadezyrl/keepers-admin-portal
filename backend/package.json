@@ -10,7 +10,7 @@
     "inspect-db": "node scripts/inspect-db.js",
     "seed:admin": "node scripts/seed-admin.js",
     "seed:demo": "node scripts/seed-demo-content.js",
-    "test": "node --test __tests__/deviceTokenService.test.js __tests__/notificationService.test.js __tests__/vehicleReadinessService.test.js __tests__/progressionLevels.test.js __tests__/rolePromotionService.test.js"
+    "test": "node --test __tests__/deviceTokenService.test.js __tests__/notificationService.test.js __tests__/vehicleReadinessService.test.js __tests__/progressionLevels.test.js __tests__/rolePromotionService.test.js __tests__/contentMediaReplace.test.js"
   },
   "keywords": [
     "keepers",

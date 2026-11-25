@@ -23,6 +23,9 @@ const CHAT_MIME = {
     'audio/x-m4a',
     'audio/aac',
     'audio/mpeg',
+    // Browser MediaRecorder (Chrome/Edge) — Android plays these; Safari prefers mp4/aac above.
+    'audio/webm',
+    'audio/ogg',
   ]),
 };
 

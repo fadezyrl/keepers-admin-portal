@@ -141,6 +141,35 @@ async function listHeroSlides({ activeOnly = true } = {}) {
   }));
 }
 
+/** Extract storage object path from a public Supabase URL for a known bucket. */
+function pathFromPublicUrl(publicUrl, bucket) {
+  if (!publicUrl || !bucket) return null;
+  const marker = `/storage/v1/object/public/${bucket}/`;
+  const idx = String(publicUrl).indexOf(marker);
+  if (idx === -1) return null;
+  const path = String(publicUrl)
+    .slice(idx + marker.length)
+    .split('?')[0];
+  return path || null;
+}
+
+/**
+ * After a successful DB image replace, best-effort remove the previous gallery object.
+ * Never throws — orphan cleanup must not fail the save.
+ */
+async function cleanupReplacedGalleryObject(previousUrl, nextUrl) {
+  if (!previousUrl || !nextUrl || previousUrl === nextUrl) return;
+  const path = pathFromPublicUrl(previousUrl, 'gallery');
+  if (!path) return;
+  const admin = getAdminClient();
+  if (!admin) return;
+  try {
+    await admin.storage.from('gallery').remove([path]);
+  } catch {
+    // ignore — record already points at the new URL
+  }
+}
+
 async function upsertHeroSlide(payload, actor, req) {
   if (!hasPermission(actor, 'media.manage')) {
     throw new AppError(403, 'FORBIDDEN', 'Cannot manage carousel');
@@ -150,6 +179,12 @@ async function upsertHeroSlide(payload, actor, req) {
   }
   const imageUrl = payload.image || payload.imageUrl;
   if (payload.id) {
+    const existing = await query(`SELECT image_url FROM hero_slides WHERE id = $1`, [
+      payload.id,
+    ]);
+    if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Slide not found');
+    const previousUrl = existing.rows[0].image_url;
+
     const updated = await query(
       `UPDATE hero_slides SET
         title = COALESCE($1, title),
@@ -179,6 +214,7 @@ async function upsertHeroSlide(payload, actor, req) {
       req,
     });
     cachePresets.carousel('hero_slides.update');
+    await cleanupReplacedGalleryObject(previousUrl, updated.rows[0].image_url);
     return updated.rows[0];
   }
 
@@ -254,6 +290,13 @@ async function upsertGalleryItem(payload, actor, req) {
   }
   const imageUrl = payload.image || payload.imageUrl;
   if (payload.id) {
+    const existing = await query(
+      `SELECT image_url FROM gallery_items WHERE id = $1 AND deleted_at IS NULL`,
+      [payload.id],
+    );
+    if (!existing.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Gallery item not found');
+    const previousUrl = existing.rows[0].image_url;
+
     const updated = await query(
       `UPDATE gallery_items SET
         image_url = COALESCE($1, image_url),
@@ -281,6 +324,7 @@ async function upsertGalleryItem(payload, actor, req) {
       req,
     });
     cachePresets.gallery('gallery_items.update');
+    await cleanupReplacedGalleryObject(previousUrl, updated.rows[0].image_url);
     return updated.rows[0];
   }
 
@@ -668,6 +712,8 @@ async function updateSetting(key, value, actor, req) {
 }
 
 module.exports = {
+  pathFromPublicUrl,
+  cleanupReplacedGalleryObject,
   listSponsors,
   upsertSponsor,
   reorderSponsors,

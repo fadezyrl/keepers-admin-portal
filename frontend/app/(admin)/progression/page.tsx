@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, buildQuery } from "@/lib/api";
 import { useAdminQuery } from "@/lib/useAdminQuery";
@@ -16,6 +16,54 @@ import type {
 } from "@/lib/types";
 import { displayName, formatDate, formatDateTime } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Drawer } from "@/components/ui/Drawer";
+import { DrawerSkeleton } from "@/components/ui/Skeleton";
+
+type MemberProgressionDetail = {
+  member?: {
+    id?: string;
+    name?: string;
+    firstName?: string;
+    lastName?: string;
+  };
+  progression?: {
+    currentLevel?: {
+      name?: string;
+      displayName?: string;
+      rank?: number;
+      description?: string;
+    } | null;
+    nextLevel?: { name?: string; displayName?: string } | null;
+    upgradeStatus?: string;
+    upgradeHistory?: Array<{
+      id: string;
+      status: string;
+      fromLevel?: string | null;
+      toLevel: string;
+      recommendedBy?: string;
+      decisionNotes?: string | null;
+      createdAt: string;
+    }>;
+    membershipHistory?: Array<{
+      id: string;
+      fromLevel?: string | null;
+      toLevel: string;
+      reason?: string | null;
+      createdAt: string;
+    }>;
+  };
+  pendingUpgradeRequests?: Array<{
+    id: string;
+    fromLevel?: string;
+    toLevel?: string;
+  }>;
+  rolePromotionRequests?: Array<{
+    id: string;
+    status: string;
+    currentRole?: string;
+    requestedRole?: string;
+  }>;
+};
 const RANK_FILTERS = [
   { value: "", label: "All ranks" },
   { value: "junior", label: "Junior" },
@@ -105,7 +153,7 @@ export default function ProgressionPage() {
   const memberDetail = useAdminQuery(
     queryKeys.progression.member(selectedMemberId || "none"),
     (signal) =>
-      api.get<Record<string, unknown>>(
+      api.get<MemberProgressionDetail>(
         `/progression/members/${selectedMemberId}`,
         { signal },
       ),
@@ -114,6 +162,21 @@ export default function ProgressionPage() {
       enabled: Boolean(selectedMemberId),
     },
   );
+
+  const closeMemberDetail = useCallback(() => {
+    setSelectedMemberId(null);
+  }, []);
+
+  // keepPreviousData can briefly show the prior member — only render matching data.
+  const detailForSelection =
+    selectedMemberId &&
+    memberDetail.data?.member?.id &&
+    memberDetail.data.member.id === selectedMemberId
+      ? memberDetail.data
+      : null;
+  const detailLoading =
+    Boolean(selectedMemberId) && !detailForSelection && !memberDetail.error;
+  const detailProgression = detailForSelection?.progression || null;
 
   async function reviewUpgrade(decision: "approved" | "rejected") {
     if (!activeUpgrade) return;
@@ -165,28 +228,6 @@ export default function ProgressionPage() {
     1,
     Math.ceil((members.data?.total || 0) / (members.data?.limit || 25)),
   );
-
-  const detailProgression = (memberDetail.data?.progression || null) as {
-    currentLevel?: { name?: string; rank?: number; description?: string } | null;
-    nextLevel?: { name?: string } | null;
-    upgradeStatus?: string;
-    upgradeHistory?: Array<{
-      id: string;
-      status: string;
-      fromLevel?: string | null;
-      toLevel: string;
-      recommendedBy?: string;
-      decisionNotes?: string | null;
-      createdAt: string;
-    }>;
-    membershipHistory?: Array<{
-      id: string;
-      fromLevel?: string | null;
-      toLevel: string;
-      reason?: string | null;
-      createdAt: string;
-    }>;
-  } | null;
 
   return (
     <div>
@@ -492,243 +533,223 @@ export default function ProgressionPage() {
         </section>
       ) : null}
 
-      {/* Member detail drawer */}
-      {selectedMemberId ? (
-        <div className="drawer-backdrop" onClick={() => setSelectedMemberId(null)}>
-          <aside
-            className="drawer-panel"
-            onClick={(e) => e.stopPropagation()}
-            aria-label="Member progression profile"
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-[var(--keepers-line)] px-5 py-4">
-              <div>
-                <p className="m-0 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-                  Progression profile
+      <Drawer
+        open={Boolean(selectedMemberId)}
+        onClose={closeMemberDetail}
+        title={
+          detailForSelection?.member?.name ||
+          displayName(
+            detailForSelection?.member?.firstName,
+            detailForSelection?.member?.lastName,
+            "Member",
+          )
+        }
+        subtitle="Progression profile"
+        wide
+      >
+        {detailLoading ? <DrawerSkeleton /> : null}
+        {!detailLoading && memberDetail.error ? (
+          <div className="space-y-4">
+            <p className="m-0 text-sm text-[var(--keepers-danger)]">
+              {memberDetail.error}
+            </p>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => void memberDetail.reload()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {!detailLoading && !memberDetail.error && detailForSelection ? (
+          <div className="space-y-6">
+            <div>
+              <p className="m-0 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Current driving level
+              </p>
+              <p className="mt-2 mb-0 text-xl font-medium">
+                {detailProgression?.currentLevel?.displayName ||
+                  detailProgression?.currentLevel?.name ||
+                  "—"}
+              </p>
+              <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
+                {detailProgression?.currentLevel?.rank
+                  ? `Position ${detailProgression.currentLevel.rank} of 21`
+                  : null}
+                {detailProgression?.nextLevel
+                  ? ` · Next: ${
+                      detailProgression.nextLevel.displayName ||
+                      detailProgression.nextLevel.name
+                    }`
+                  : " · Final level"}
+              </p>
+              {detailProgression?.currentLevel?.description ? (
+                <p className="mt-2 mb-0 text-sm text-[var(--keepers-muted)]">
+                  {detailProgression.currentLevel.description}
                 </p>
-                <h2 className="font-display m-0 mt-1 text-2xl">
-                  {(memberDetail.data?.member as { name?: string } | undefined)?.name ||
-                    "Member"}
-                </h2>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setSelectedMemberId(null)}
-              >
-                Close
-              </button>
+              ) : null}
             </div>
-            <div className="space-y-6 overflow-y-auto px-5 py-5">
-              {memberDetail.loading && !memberDetail.data ? (
-                <p className="text-sm text-[var(--keepers-muted)]">Loading…</p>
+
+            <div>
+              <p className="mb-2 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Pending requests
+              </p>
+              {(detailForSelection.pendingUpgradeRequests || []).length === 0 &&
+              (detailForSelection.rolePromotionRequests || []).filter(
+                (r) => r.status === "pending",
+              ).length === 0 ? (
+                <p className="m-0 text-sm text-[var(--keepers-muted)]">None</p>
               ) : (
-                <>
-                  <div>
-                    <p className="m-0 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-                      Current driving level
-                    </p>
-                    <p className="mt-2 mb-0 text-xl font-medium">
-                      {detailProgression?.currentLevel?.name || "—"}
-                    </p>
-                    <p className="mt-1 mb-0 text-sm text-[var(--keepers-muted)]">
-                      {detailProgression?.currentLevel?.rank
-                        ? `Position ${detailProgression.currentLevel.rank} of 21`
-                        : null}
-                      {detailProgression?.nextLevel
-                        ? ` · Next: ${detailProgression.nextLevel.name}`
-                        : " · Final level"}
-                    </p>
-                    {detailProgression?.currentLevel?.description ? (
-                      <p className="mt-2 mb-0 text-sm text-[var(--keepers-muted)]">
-                        {detailProgression.currentLevel.description}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-                      Pending requests
-                    </p>
-                    {(
-                      (memberDetail.data?.pendingUpgradeRequests as UpgradeRequest[]) ||
-                      []
-                    ).length === 0 &&
-                    (
-                      (memberDetail.data?.rolePromotionRequests as Array<{
-                        status: string;
-                      }>) || []
-                    ).filter((r) => r.status === "pending").length === 0 ? (
-                      <p className="m-0 text-sm text-[var(--keepers-muted)]">None</p>
-                    ) : (
-                      <ul className="m-0 list-none space-y-2 p-0 text-sm">
-                        {(
-                          (memberDetail.data?.pendingUpgradeRequests as Array<{
-                            id: string;
-                            fromLevel?: string;
-                            toLevel?: string;
-                          }>) || []
-                        ).map((u) => (
-                          <li key={u.id}>
-                            Level: {u.fromLevel || "—"} → {u.toLevel}
-                          </li>
-                        ))}
-                        {(
-                          (memberDetail.data?.rolePromotionRequests as Array<{
-                            id: string;
-                            status: string;
-                            currentRole?: string;
-                            requestedRole?: string;
-                          }>) || []
-                        )
-                          .filter((r) => r.status === "pending")
-                          .map((r) => (
-                            <li key={r.id}>
-                              Club role: {r.currentRole} → {r.requestedRole}
-                            </li>
-                          ))}
-                      </ul>
-                    )}
-                  </div>
-
-                  <div>
-                    <p className="mb-2 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
-                      Level history
-                    </p>
-                    <ul className="m-0 list-none space-y-2 p-0 text-sm">
-                      {(detailProgression?.membershipHistory || []).slice(0, 12).map((h) => (
-                        <li key={h.id} className="text-[var(--keepers-muted)]">
-                          <span className="text-[var(--keepers-ink)]">
-                            {h.fromLevel || "—"} → {h.toLevel}
-                          </span>
-                          {" · "}
-                          {formatDate(h.createdAt)}
-                        </li>
-                      ))}
-                      {(detailProgression?.membershipHistory || []).length === 0 ? (
-                        <li className="text-[var(--keepers-muted)]">No history yet</li>
-                      ) : null}
-                    </ul>
-                  </div>
-                </>
+                <ul className="m-0 list-none space-y-2 p-0 text-sm">
+                  {(detailForSelection.pendingUpgradeRequests || []).map((u) => (
+                    <li key={u.id}>
+                      Level: {u.fromLevel || "—"} → {u.toLevel}
+                    </li>
+                  ))}
+                  {(detailForSelection.rolePromotionRequests || [])
+                    .filter((r) => r.status === "pending")
+                    .map((r) => (
+                      <li key={r.id}>
+                        Club role: {r.currentRole} → {r.requestedRole}
+                      </li>
+                    ))}
+                </ul>
               )}
             </div>
-          </aside>
-        </div>
-      ) : null}
 
-      {/* Review drawers */}
-      {activeUpgrade || activeRolePromo ? (
-        <div
-          className="drawer-backdrop"
-          onClick={() => {
-            setActiveUpgrade(null);
-            setActiveRolePromo(null);
-          }}
-        >
-          <aside className="drawer-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="border-b border-[var(--keepers-line)] px-5 py-4">
-              <h2 className="font-display m-0 text-2xl">
-                {activeUpgrade ? "Review level promotion" : "Review club role promotion"}
-              </h2>
+            <div>
+              <p className="mb-2 text-[0.68rem] tracking-[0.14em] uppercase text-[var(--keepers-muted)]">
+                Level history
+              </p>
+              <ul className="m-0 list-none space-y-2 p-0 text-sm">
+                {(detailProgression?.membershipHistory || [])
+                  .slice(0, 12)
+                  .map((h) => (
+                    <li key={h.id} className="text-[var(--keepers-muted)]">
+                      <span className="text-[var(--keepers-ink)]">
+                        {h.fromLevel || "—"} → {h.toLevel}
+                      </span>
+                      {" · "}
+                      {formatDate(h.createdAt)}
+                    </li>
+                  ))}
+                {(detailProgression?.membershipHistory || []).length === 0 ? (
+                  <li className="text-[var(--keepers-muted)]">No history yet</li>
+                ) : null}
+              </ul>
             </div>
-            <div className="space-y-4 px-5 py-5">
-              {activeUpgrade ? (
-                <>
-                  <p className="m-0">
-                    <strong>
-                      {displayName(
-                        activeUpgrade.member_first_name,
-                        activeUpgrade.member_last_name,
-                      )}
-                    </strong>
-                  </p>
-                  <p className="m-0 text-sm text-[var(--keepers-muted)]">
-                    Current / from: {activeUpgrade.from_level_name || "—"}
-                  </p>
-                  <p className="m-0 text-sm">
-                    Proposed next: <strong>{activeUpgrade.to_level_name}</strong>
-                  </p>
-                  {activeUpgrade.recommendation_notes ? (
-                    <p className="m-0 text-sm text-[var(--keepers-muted)]">
-                      Marshall notes: {activeUpgrade.recommendation_notes}
-                    </p>
-                  ) : null}
-                </>
-              ) : null}
-              {activeRolePromo ? (
-                <>
-                  <p className="m-0">
-                    <strong>
-                      {displayName(activeRolePromo.first_name, activeRolePromo.last_name)}
-                    </strong>
-                  </p>
-                  <p className="m-0 text-sm text-[var(--keepers-muted)]">
-                    Current club role: {activeRolePromo.current_role_code}
-                  </p>
-                  <p className="m-0 text-sm">
-                    Requested club role:{" "}
-                    <strong>{activeRolePromo.requested_role_code}</strong>
-                  </p>
-                  <p className="m-0 text-sm text-[var(--keepers-muted)]">
-                    This does not change driving level. Admin / Super Admin roles are never
-                    downgraded.
-                  </p>
-                </>
-              ) : null}
+          </div>
+        ) : null}
+      </Drawer>
 
-              <label className="block">
-                <span className="mb-1 block text-sm text-[var(--keepers-muted)]">
-                  Assessment notes
-                </span>
-                <textarea
-                  className="input min-h-[100px]"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Internal notes for the audit record"
-                />
-              </label>
+      <Drawer
+        open={Boolean(activeUpgrade || activeRolePromo)}
+        onClose={() => {
+          setActiveUpgrade(null);
+          setActiveRolePromo(null);
+        }}
+        title={
+          activeUpgrade ? "Review level promotion" : "Review club role promotion"
+        }
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() =>
+                activeUpgrade
+                  ? void reviewUpgrade("approved")
+                  : void reviewRolePromo("approved")
+              }
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy}
+              onClick={() =>
+                activeUpgrade
+                  ? void reviewUpgrade("rejected")
+                  : void reviewRolePromo("rejected")
+              }
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => {
+                setActiveUpgrade(null);
+                setActiveRolePromo(null);
+              }}
+            >
+              Cancel
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {activeUpgrade ? (
+            <>
+              <p className="m-0">
+                <strong>
+                  {displayName(
+                    activeUpgrade.member_first_name,
+                    activeUpgrade.member_last_name,
+                  )}
+                </strong>
+              </p>
+              <p className="m-0 text-sm text-[var(--keepers-muted)]">
+                Current / from: {activeUpgrade.from_level_name || "—"}
+              </p>
+              <p className="m-0 text-sm">
+                Proposed next: <strong>{activeUpgrade.to_level_name}</strong>
+              </p>
+              {activeUpgrade.recommendation_notes ? (
+                <p className="m-0 text-sm text-[var(--keepers-muted)]">
+                  Marshall notes: {activeUpgrade.recommendation_notes}
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          {activeRolePromo ? (
+            <>
+              <p className="m-0">
+                <strong>
+                  {displayName(activeRolePromo.first_name, activeRolePromo.last_name)}
+                </strong>
+              </p>
+              <p className="m-0 text-sm text-[var(--keepers-muted)]">
+                Current club role: {activeRolePromo.current_role_code}
+              </p>
+              <p className="m-0 text-sm">
+                Requested club role:{" "}
+                <strong>{activeRolePromo.requested_role_code}</strong>
+              </p>
+              <p className="m-0 text-sm text-[var(--keepers-muted)]">
+                This does not change driving level. Admin / Super Admin roles are never
+                downgraded.
+              </p>
+            </>
+          ) : null}
 
-              <div className="flex flex-wrap gap-2 pt-2">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy}
-                  onClick={() =>
-                    activeUpgrade
-                      ? void reviewUpgrade("approved")
-                      : void reviewRolePromo("approved")
-                  }
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    activeUpgrade
-                      ? void reviewUpgrade("rejected")
-                      : void reviewRolePromo("rejected")
-                  }
-                >
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={busy}
-                  onClick={() => {
-                    setActiveUpgrade(null);
-                    setActiveRolePromo(null);
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </aside>
+          <label className="block">
+            <span className="mb-1 block text-sm text-[var(--keepers-muted)]">
+              Assessment notes
+            </span>
+            <textarea
+              className="input min-h-[100px] w-full"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Internal notes for the audit record"
+            />
+          </label>
         </div>
-      ) : null}
+      </Drawer>
     </div>
   );
 }
