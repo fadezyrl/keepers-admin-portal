@@ -227,6 +227,18 @@ export const MATRIX_CATEGORIES: MatrixCategory[] = [
         label: "Manage all trips",
         permissions: ["trips.manage"],
       },
+      {
+        id: "chat.moderate",
+        label: "Moderate chat reports",
+        permissions: ["chat.moderate"],
+        effective: {
+          super_admin: "allowed",
+          admin: "allowed",
+          marshall: "not_allowed",
+          pre_marshall: "not_allowed",
+          member: "not_allowed",
+        },
+      },
     ],
   },
   {

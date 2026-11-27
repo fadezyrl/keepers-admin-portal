@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatComposer } from "@/components/chat/ChatComposer";
 import { ChatMessageBubble } from "@/components/chat/ChatMessageBubble";
+import { ChatReportsPanel } from "@/components/chat/ChatReportsPanel";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAuth } from "@/lib/auth";
 import {
@@ -20,6 +21,8 @@ import {
 } from "@/lib/chatSocket";
 import type { ChatInboxItem, ChatMessage } from "@/lib/chatTypes";
 import { useToast } from "@/lib/toast";
+
+type CommTab = "inbox" | "reports";
 
 function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
@@ -45,6 +48,7 @@ function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMe
 export default function ChatModerationPage() {
   const { user, token } = useAuth();
   const toast = useToast();
+  const [tab, setTab] = useState<CommTab>("inbox");
   const [items, setItems] = useState<ChatInboxItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -193,13 +197,33 @@ export default function ChatModerationPage() {
     <div className="space-y-6">
       <PageHeader
         title="Communication"
-        subtitle="Trip group and private chats — render media, send replies, and stay in sync with the mobile app."
+        subtitle="Trip chats, media replies, and reported user-generated content moderation."
       />
 
-      {error ? (
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={["btn btn-sm", tab === "inbox" ? "btn-primary" : "btn-ghost"].join(" ")}
+          onClick={() => setTab("inbox")}
+        >
+          Inbox
+        </button>
+        <button
+          type="button"
+          className={["btn btn-sm", tab === "reports" ? "btn-primary" : "btn-ghost"].join(" ")}
+          onClick={() => setTab("reports")}
+        >
+          Reports
+        </button>
+      </div>
+
+      {tab === "reports" ? <ChatReportsPanel /> : null}
+
+      {tab === "inbox" && error ? (
         <p className="border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>
       ) : null}
 
+      {tab === "inbox" ? (
       <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="panel overflow-hidden">
           <div className="flex items-center justify-between border-b border-[var(--keepers-border)] px-4 py-3">
@@ -317,6 +341,7 @@ export default function ChatModerationPage() {
           ) : null}
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

@@ -68,6 +68,7 @@ require.cache[firebasePath] = {
   loaded: true,
   exports: {
     getFirebaseAdmin: () => null,
+    getFirebaseMessaging: () => null,
     isFirebaseReady: () => false,
     getFirebaseInitError: () => 'not configured in test',
   },

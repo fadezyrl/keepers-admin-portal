@@ -15,6 +15,10 @@ const CLASS_MAP: Record<string, string> = {
   deleted: "badge-deleted",
   cancelled: "badge-cancelled",
   full: "badge-pending",
+  open: "badge-pending",
+  reviewing: "badge-waitlist",
+  resolved: "badge-approved",
+  dismissed: "badge-draft",
 };
 
 export function StatusBadge({ status }: { status?: string | null }) {

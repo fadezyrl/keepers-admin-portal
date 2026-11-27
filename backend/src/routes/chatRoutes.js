@@ -9,6 +9,14 @@ const {
   requirePermission,
 } = require('../middleware/auth');
 const chatService = require('../services/chatService');
+const chatModerationService = require('../services/chatModerationService');
+const { validate } = require('../validators/validate');
+const {
+  reportMessageSchema,
+  reportMemberSchema,
+  blockUserSchema,
+  reviewReportSchema,
+} = require('../validators/schemas');
 const { env } = require('../config/env');
 
 const router = express.Router();
@@ -25,6 +33,17 @@ const sendLimiter = rateLimit({
   message: {
     success: false,
     error: { code: 'RATE_LIMIT', message: 'Too many messages — slow down' },
+  },
+});
+
+const reportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many reports — slow down' },
   },
 });
 
@@ -154,13 +173,114 @@ router.post(
 router.post(
   '/messages/:id/report',
   requirePermission('chat.read'),
+  reportLimiter,
+  validate(reportMessageSchema),
   asyncHandler(async (req, res) => {
-    const data = await chatService.reportMessage(
+    const data = await chatModerationService.reportMessage(
       req.params.id,
       req.user,
-      req.body.reason,
+      req.body,
     );
     return created(res, data, 'Report submitted');
+  }),
+);
+
+router.post(
+  '/members/:userId/report',
+  requirePermission('chat.read'),
+  reportLimiter,
+  validate(reportMemberSchema),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.reportMember(
+      req.params.userId,
+      req.user,
+      req.body,
+    );
+    return created(res, data, 'Report submitted');
+  }),
+);
+
+router.get(
+  '/blocks',
+  requirePermission('chat.read'),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.listBlockedUsers(req.user);
+    return ok(res, data);
+  }),
+);
+
+router.post(
+  '/blocks',
+  requirePermission('chat.read'),
+  validate(blockUserSchema),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.blockUser(
+      req.body.userId,
+      req.user,
+      { reason: req.body.reason },
+    );
+    return created(res, data, 'Member blocked');
+  }),
+);
+
+router.delete(
+  '/blocks/:userId',
+  requirePermission('chat.read'),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.unblockUser(
+      req.params.userId,
+      req.user,
+    );
+    return ok(res, data, 'Member unblocked');
+  }),
+);
+
+router.get(
+  '/reports',
+  requirePermission('chat.moderate'),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.listReports(req.user, {
+      status: req.query.status || null,
+      reportType: req.query.reportType || null,
+      page: Number(req.query.page || 1),
+      limit: Number(req.query.limit || 20),
+    });
+    return ok(res, data);
+  }),
+);
+
+router.get(
+  '/reports/:id',
+  requirePermission('chat.moderate'),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.getReport(req.params.id, req.user);
+    return ok(res, data);
+  }),
+);
+
+router.patch(
+  '/reports/:id',
+  requirePermission('chat.moderate'),
+  validate(reviewReportSchema),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.reviewReport(
+      req.params.id,
+      req.user,
+      req.body,
+    );
+    return ok(res, data, 'Report updated');
+  }),
+);
+
+router.get(
+  '/moderation-actions',
+  requirePermission('chat.moderate'),
+  asyncHandler(async (req, res) => {
+    const data = await chatModerationService.listModerationActions(req.user, {
+      page: Number(req.query.page || 1),
+      limit: Number(req.query.limit || 30),
+    });
+    return ok(res, data);
   }),
 );
 

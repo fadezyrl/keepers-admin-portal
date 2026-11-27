@@ -1,5 +1,9 @@
 const { query } = require('../config/db');
-const { getFirebaseAdmin, isFirebaseReady, getFirebaseInitError } = require('../config/firebase');
+const {
+  getFirebaseMessaging,
+  isFirebaseReady,
+  getFirebaseInitError,
+} = require('../config/firebase');
 const {
   listActiveTokensForUsers,
   deactivateTokensByIds,
@@ -109,8 +113,11 @@ async function deliverPush(notificationRow) {
     return { status: 'none' };
   }
 
-  const admin = getFirebaseAdmin();
-  const messaging = admin.messaging();
+  const messaging = getFirebaseMessaging();
+  if (!messaging) {
+    await setPushStatus(notificationRow.id, 'skipped');
+    return { status: 'skipped' };
+  }
   const data = buildPushData(notificationRow);
   const invalidIds = [];
   let successCount = 0;

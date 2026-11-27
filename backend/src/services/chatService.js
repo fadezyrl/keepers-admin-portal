@@ -440,15 +440,17 @@ async function mapMessagesBatch(
       attachments.push(mapAttachment(a, signed));
     }
 
+    const isDeleted = Boolean(row.deleted_at);
     mapped.push({
       id: row.id,
       conversationId: row.conversation_id,
       clientMessageId: row.client_message_id,
       type: row.message_type,
-      content: row.deleted_at ? null : row.content,
+      content: isDeleted ? null : row.content,
       replyToMessageId: row.reply_to_message_id,
       sender: row.sender_id ? senderById.get(row.sender_id) || null : null,
-      attachments,
+      // Soft-deleted messages keep a placeholder in history; media must not remain visible.
+      attachments: isDeleted ? [] : attachments,
       createdAt: row.created_at,
       editedAt: row.edited_at,
       deletedAt: row.deleted_at,
@@ -646,7 +648,7 @@ async function listMessages(
   actor,
   { before = null, after = null, limit = 40 } = {},
 ) {
-  await assertCanAccessConversation(conversationId, actor);
+  const access = await assertCanAccessConversation(conversationId, actor);
   const safeLimit = Math.min(Math.max(Number(limit) || 40, 1), 100);
 
   // `after` = newer-than watermark for silent catch-up sync (local-first clients).
@@ -662,10 +664,25 @@ async function listMessages(
   const beforeIso = toIsoCursor(before);
   const afterIso = toIsoCursor(after);
 
+  // Viewer-scoped hide: blocked members stay in the trip/chat for everyone else.
+  const hideBlocked = !access.asModerator;
   const params = [conversationId];
   let sql = `
     SELECT * FROM messages
     WHERE conversation_id = $1`;
+  if (hideBlocked) {
+    params.push(actor.id);
+    sql += `
+      AND (
+        sender_id IS NULL
+        OR sender_id = $${params.length}
+        OR NOT EXISTS (
+          SELECT 1 FROM chat_user_blocks b
+          WHERE b.blocker_id = $${params.length}
+            AND b.blocked_user_id = messages.sender_id
+        )
+      )`;
+  }
 
   if (afterIso) {
     // Use >= in SQL then filter in JS: timestamptz can store sub-ms precision, so a
@@ -891,7 +908,10 @@ async function listInbox(actor, { limit = 50 } = {}) {
              (
                SELECT COUNT(*)::int FROM message_receipts mr
                JOIN messages m ON m.id = mr.message_id
-               WHERE m.conversation_id = c.id AND mr.user_id = $1 AND mr.read_at IS NULL
+               WHERE m.conversation_id = c.id
+                 AND m.deleted_at IS NULL
+                 AND mr.user_id = $1
+                 AND mr.read_at IS NULL
              ) AS unread_count,
              (
                SELECT m.content FROM messages m
@@ -914,7 +934,10 @@ async function listInbox(actor, { limit = 50 } = {}) {
              (
                SELECT COUNT(*)::int FROM message_receipts mr
                JOIN messages m ON m.id = mr.message_id
-               WHERE m.conversation_id = c.id AND mr.user_id = $1 AND mr.read_at IS NULL
+               WHERE m.conversation_id = c.id
+                 AND m.deleted_at IS NULL
+                 AND mr.user_id = $1
+                 AND mr.read_at IS NULL
              ) AS unread_count,
              (
                SELECT m.content FROM messages m
@@ -982,7 +1005,10 @@ async function getConversation(conversationId, actor) {
   const unread = await query(
     `SELECT COUNT(*)::int AS n FROM message_receipts mr
      JOIN messages m ON m.id = mr.message_id
-     WHERE m.conversation_id = $1 AND mr.user_id = $2 AND mr.read_at IS NULL`,
+     WHERE m.conversation_id = $1
+       AND m.deleted_at IS NULL
+       AND mr.user_id = $2
+       AND mr.read_at IS NULL`,
     [conversationId, actor.id],
   );
 
@@ -1073,9 +1099,6 @@ async function openPrivateAsMarshall(tripId, memberId, actor) {
 }
 
 async function softDeleteMessage(messageId, actor, reason) {
-  if (!isModerator(actor) && !hasPermission(actor, 'chat.moderate')) {
-    // Allow sender soft-delete of own message within policy
-  }
   const msg = await query(`SELECT * FROM messages WHERE id = $1`, [messageId]);
   if (!msg.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Message not found');
   const row = msg.rows[0];
@@ -1087,6 +1110,16 @@ async function softDeleteMessage(messageId, actor, reason) {
     throw new AppError(403, 'FORBIDDEN', 'Cannot delete this message');
   }
 
+  // Idempotent: already soft-deleted messages stay deleted without duplicate audit noise.
+  if (row.deleted_at) {
+    return {
+      id: messageId,
+      deleted: true,
+      conversationId: row.conversation_id,
+      alreadyDeleted: true,
+    };
+  }
+
   await query(
     `UPDATE messages SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2`,
     [actor.id, messageId],
@@ -1094,35 +1127,24 @@ async function softDeleteMessage(messageId, actor, reason) {
   await query(
     `INSERT INTO chat_moderation_actions (actor_id, action, conversation_id, message_id, reason)
      VALUES ($1, 'delete_message', $2, $3, $4)`,
-    [actor.id, row.conversation_id, messageId, reason || null],
+    [
+      actor.id,
+      row.conversation_id,
+      messageId,
+      reason || (isSender && !canModerate ? 'user_delete' : null),
+    ],
   );
 
   emitToConversation(row.conversation_id, 'chat:message.deleted', {
     messageId,
     conversationId: row.conversation_id,
   });
-  return { id: messageId, deleted: true };
-}
-
-async function reportMessage(messageId, actor, reason) {
-  const msg = await query(`SELECT * FROM messages WHERE id = $1`, [messageId]);
-  if (!msg.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Message not found');
-  await assertCanAccessConversation(msg.rows[0].conversation_id, actor);
-  if (!reason?.trim()) throw new AppError(400, 'VALIDATION_ERROR', 'Reason is required');
-
-  const inserted = await query(
-    `INSERT INTO chat_reports (
-       reporter_id, conversation_id, message_id, reported_user_id, reason
-     ) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [
-      actor.id,
-      msg.rows[0].conversation_id,
-      messageId,
-      msg.rows[0].sender_id,
-      reason.trim(),
-    ],
-  );
-  return inserted.rows[0];
+  return {
+    id: messageId,
+    deleted: true,
+    conversationId: row.conversation_id,
+    alreadyDeleted: false,
+  };
 }
 
 module.exports = {
@@ -1144,7 +1166,6 @@ module.exports = {
   openPrivateForTrip,
   openPrivateAsMarshall,
   softDeleteMessage,
-  reportMessage,
   listActiveRecipientIds,
   TEXT_MAX,
   IMAGE_MAX_BYTES,

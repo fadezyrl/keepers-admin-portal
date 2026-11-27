@@ -35,11 +35,37 @@ function getFirebaseAdmin() {
   initAttempted = true;
 
   try {
-    // Lazy require so local/dev without firebase-admin still boots if package missing.
+    // firebase-admin v12+ modular surface: getApps/getApp (legacy `.apps` removed).
     // eslint-disable-next-line global-require
     const firebaseAdmin = require('firebase-admin');
-    if (firebaseAdmin.apps.length) {
-      admin = firebaseAdmin.app();
+    const getApps =
+      typeof firebaseAdmin.getApps === 'function' ? firebaseAdmin.getApps : null;
+    const getApp =
+      typeof firebaseAdmin.getApp === 'function' ? firebaseAdmin.getApp : null;
+    const initializeApp =
+      typeof firebaseAdmin.initializeApp === 'function'
+        ? firebaseAdmin.initializeApp
+        : null;
+    const cert =
+      typeof firebaseAdmin.cert === 'function'
+        ? firebaseAdmin.cert
+        : firebaseAdmin.credential?.cert;
+
+    if (!initializeApp || !cert) {
+      initError = 'firebase-admin initializeApp/cert unavailable';
+      return null;
+    }
+
+    const existing =
+      getApps && getApps().length
+        ? getApp
+          ? getApp()
+          : getApps()[0]
+        : firebaseAdmin.apps?.length
+          ? firebaseAdmin.app()
+          : null;
+    if (existing) {
+      admin = existing;
       return admin;
     }
 
@@ -49,8 +75,8 @@ function getFirebaseAdmin() {
       return null;
     }
 
-    admin = firebaseAdmin.initializeApp({
-      credential: firebaseAdmin.credential.cert(serviceAccount),
+    admin = initializeApp({
+      credential: cert(serviceAccount),
       projectId:
         serviceAccount.project_id ||
         process.env.FIREBASE_PROJECT_ID ||
@@ -73,8 +99,33 @@ function getFirebaseInitError() {
   return initError;
 }
 
+/**
+ * firebase-admin v14: messaging lives on `firebase-admin/messaging` (no app.messaging()).
+ */
+function getFirebaseMessaging() {
+  const app = getFirebaseAdmin();
+  if (!app) return null;
+  try {
+    // eslint-disable-next-line global-require
+    const { getMessaging } = require('firebase-admin/messaging');
+    return getMessaging(app);
+  } catch (err) {
+    initError = err.message || 'Firebase Messaging unavailable';
+    return null;
+  }
+}
+
+/** Reset cached init — used by diagnostics/tests only. */
+function __resetFirebaseForTests() {
+  admin = null;
+  initAttempted = false;
+  initError = null;
+}
+
 module.exports = {
   getFirebaseAdmin,
+  getFirebaseMessaging,
   isFirebaseReady,
   getFirebaseInitError,
+  __resetFirebaseForTests,
 };

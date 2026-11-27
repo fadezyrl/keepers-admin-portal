@@ -129,10 +129,44 @@ function validate(schema) {
   };
 }
 
+const reportReasonEnum = z.enum([
+  'spam',
+  'harassment',
+  'hate',
+  'sexual_content',
+  'violence',
+  'other',
+]);
+
+const reportMessageSchema = z.object({
+  reason: reportReasonEnum,
+  details: z.string().trim().max(1000).optional().nullable(),
+});
+
+const reportMemberSchema = z.object({
+  reason: reportReasonEnum,
+  details: z.string().trim().max(1000).optional().nullable(),
+  conversationId: z.string().uuid().optional().nullable(),
+});
+
+const blockUserSchema = z.object({
+  userId: z.string().uuid(),
+  reason: z.string().trim().max(500).optional().nullable(),
+});
+
+const reviewReportSchema = z.object({
+  action: z.enum(['dismiss', 'resolve', 'delete_message', 'suspend_member']),
+  reviewNotes: z.string().trim().max(1000).optional().nullable(),
+});
+
 module.exports = {
   signupSchema,
   loginSchema,
   tripSchema,
   ratingSchema,
+  reportMessageSchema,
+  reportMemberSchema,
+  blockUserSchema,
+  reviewReportSchema,
   validate,
 };
